@@ -11,6 +11,6 @@
   :author "Tomas Hlavaty"
   :maintainer "Tomas Hlavaty"
   :licence ""
-  :depends-on ()
+  :depends-on (:trivial-gray-streams :alexandria)
   :serial t
   :components ((:file "ole")))

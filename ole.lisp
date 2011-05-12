@@ -295,7 +295,12 @@
 (defun save-entry-stream (ole-file entry filename)
   (if (<= (ole-entry.stream-size entry)
           (ole-header.mini-stream-cutoff-size (ole-file.header ole-file)))
-      :mfat ;; TODO mini stream
+      (save-chain (ole-file.stream ole-file) ;; TODO mini stream, mfat?
+                  (sector-chain (ole-file.fat ole-file) ;; mfat?
+                                (ole-entry.starting-sector-location
+                                 (aref (ole-file.directories ole-file) 0)))
+                  filename
+                  (ole-entry.stream-size entry))
       (save-chain (ole-file.stream ole-file)
                   (sector-chain (ole-file.fat ole-file)
                                 (ole-entry.starting-sector-location entry))
@@ -317,3 +322,112 @@
                                      (ole-entry-name-to-string
                                       (ole-entry.name entry)
                                       (ole-entry.name-length entry))))))))))
+
+(defclass ole-entry-stream (trivial-gray-streams:fundamental-binary-input-stream)
+  ((ole-file :initarg :ole-file)
+   (ole-entry :initarg :ole-entry)
+   (offset :initform 0)
+   (sector-offset :initform -1)
+   (remaining)
+   (buffer)
+   (chain)))
+
+(defmethod initialize-instance :after ((instance ole-entry-stream) &rest initargs)
+  (declare (ignore initargs))
+  (with-slots (ole-file ole-entry remaining buffer chain) instance
+    (setf remaining (ole-entry.stream-size ole-entry)
+          buffer (make-array 512 :element-type '(unsigned-byte 8))
+          chain (sector-chain
+                 (ole-file.fat ole-file)
+                 (ole-entry.starting-sector-location ole-entry)))))
+
+(defmethod trivial-gray-streams-system::stream-element-type ((stream ole-entry-stream))
+  '(unsigned-byte 8))
+
+(defmethod trivial-gray-streams:stream-read-byte ((stream ole-entry-stream))
+  (with-slots (ole-file offset sector-offset remaining buffer chain) stream
+    (cond
+      ((plusp remaining)
+       (incf offset)
+       (decf remaining)
+       (unless (< -1 sector-offset 512)
+         (let ((x (pop chain)))
+           (when x
+             (let ((ole-stream (ole-file.stream ole-file)))
+               (seek-sector x ole-stream)
+               (read-sequence buffer ole-stream))))
+         (setq sector-offset 0))
+       (prog1 (aref buffer sector-offset)
+         (incf sector-offset)))
+      (t :eof)))
+  #+nil
+  (if (<= (ole-entry.stream-size entry)
+          (ole-header.mini-stream-cutoff-size (ole-file.header ole-file)))
+      ;;:mfat ;; TODO mini stream
+      (save-chain (ole-file.stream ole-file)
+                  (sector-chain (ole-file.fat ole-file) ;; mfat
+                                (ole-entry.starting-sector-location
+                                 (aref (ole-file.directories ole-file) 0)))
+                  filename
+                  (ole-entry.stream-size entry))
+      (save-chain (ole-file.stream ole-file)
+                  (sector-chain (ole-file.fat ole-file)
+                                (ole-entry.starting-sector-location entry))
+                  filename
+                  (ole-entry.stream-size entry))))
+
+(defun call-with-ole-entry-stream (stream fn)
+  (with-open-stream (x stream)
+    (funcall fn x)))
+
+(defmacro with-ole-entry-stream ((var ole-file ole-entry) &body body)
+  `(call-with-ole-entry-stream
+    (make-instance 'ole-entry-stream :ole-file ,ole-file :ole-entry ,ole-entry)
+    (lambda (,var) ,@body)))
+
+
+(define-structure OfficeArtRecordHeader ()
+  (recVer ushort :always 0)
+  (recInstance ushort :member '(#x46A #x46B #x6E2 #x6E3))
+  (recType ushort :always #xF01D)
+  (recLen ushort))
+
+(define-structure OfficeArtBlipJPEG ()
+  ;;(rh OfficeArtRecordHeader)
+  (rgbUid1 guid)
+  (rgbUid2 guid ;;:optional '(when (member recInstance '(#x46B #x6E3)))
+           )
+  (tag ubyte)
+  #+nil(BLIBFileData))
+
+(defun extract-ole-file2 (filename)
+  (with-ole-file (ole-file filename)
+    (traverse-directories
+     ole-file
+     (lambda (entry id level)
+       (declare (ignore id level))
+       (case (ole-entry.object-type entry)
+         ;;(1 "storage")
+         (2 ;; stream
+          (let ((entry-name (ole-entry-name-to-string
+                             (ole-entry.name entry)
+                             (ole-entry.name-length entry))))
+            (with-ole-entry-stream (in ole-file entry)
+              (with-open-file (out (format nil "/tmp/a/~a" entry-name)
+                                   :direction :output
+                                   :if-does-not-exist :create
+                                   :if-exists :supersede
+                                   :element-type '(unsigned-byte 8))
+                (alexandria:copy-stream in out)))
+            (when (equal "Pictures" entry-name)
+              (with-ole-entry-stream (in ole-file entry)
+                (print (read-OfficeArtRecordHeader in))
+                (print (read-value 'guid in))
+                (read-value 'ubyte in)
+                (with-open-file (out "/tmp/a/a.jpeg"
+                                     :direction :output
+                                     :if-does-not-exist :create
+                                     :if-exists :supersede
+                                     :element-type '(unsigned-byte 8))
+                  (alexandria:copy-stream in out)))))))))))
+
