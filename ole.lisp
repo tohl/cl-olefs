@@ -323,58 +323,77 @@
                                       (ole-entry.name entry)
                                       (ole-entry.name-length entry))))))))))
 
+(defun sector-ztream (ole-stream chain)
+  (let ((buffer (make-array 512 :element-type '(unsigned-byte 8))))
+    (lambda ()
+      (let ((x (pop chain)))
+        (when x
+          (seek-sector x ole-stream)
+          (let ((n (read-sequence buffer ole-stream)))
+            (when (plusp n)
+              (values buffer n))))))))
+
+(defun sized-sector-ztream (sector-ztream size)
+  (lambda ()
+    (when (plusp size)
+      (multiple-value-bind (buffer n) (funcall sector-ztream)
+        (when buffer
+          (values buffer (prog1 (if (< size n) size n) (decf size n))))))))
+
+(defun byte-ztream (sector-ztream)
+  (multiple-value-bind (buffer n) (funcall sector-ztream)
+    (let ((i 0))
+      (lambda ()
+        (when buffer
+          (unless (< i n)
+            (multiple-value-setq (buffer n) (funcall sector-ztream))
+            (setq i 0)))
+        (when buffer
+          (prog1 (aref buffer i)
+            (incf i)))))))
+
 (defclass ole-entry-stream (trivial-gray-streams:fundamental-binary-input-stream)
   ((ole-file :initarg :ole-file)
    (ole-entry :initarg :ole-entry)
    (offset :initform 0)
-   (sector-offset :initform -1)
-   (remaining)
-   (buffer)
-   (chain)))
+   (chain)
+   (mchain)
+   (ztream :initform nil)))
 
 (defmethod initialize-instance :after ((instance ole-entry-stream) &rest initargs)
   (declare (ignore initargs))
-  (with-slots (ole-file ole-entry remaining buffer chain) instance
-    (setf remaining (ole-entry.stream-size ole-entry)
-          buffer (make-array 512 :element-type '(unsigned-byte 8))
-          chain (sector-chain
-                 (ole-file.fat ole-file)
-                 (ole-entry.starting-sector-location ole-entry)))))
+  (with-slots (ole-file ole-entry chain mchain) instance
+    (let ((mini (< (ole-entry.stream-size ole-entry)
+                   (ole-header.mini-stream-cutoff-size (ole-file.header ole-file)))))
+      (setq chain (sector-chain
+                   (ole-file.fat ole-file)
+                   (ole-entry.starting-sector-location
+                    (if mini
+                        (aref (ole-file.directories ole-file) 0)
+                        ole-entry)))
+            mchain (when mini
+                     (sector-chain
+                      (ole-file.mfat ole-file)
+                      (ole-entry.starting-sector-location ole-entry)))))))
 
-(defmethod trivial-gray-streams-system::stream-element-type ((stream ole-entry-stream))
+(defmethod trivial-gray-streams::stream-element-type ((stream ole-entry-stream))
   '(unsigned-byte 8))
 
+(defun ensure-ole-entry-stream-initialized (x)
+  (with-slots (ole-file ole-entry chain ztream) x
+    (unless ztream
+      (setq ztream (byte-ztream
+                    (sized-sector-ztream
+                     (sector-ztream (ole-file.stream ole-file) chain)
+                     (ole-entry.stream-size ole-entry)))))))
+
 (defmethod trivial-gray-streams:stream-read-byte ((stream ole-entry-stream))
-  (with-slots (ole-file offset sector-offset remaining buffer chain) stream
-    (cond
-      ((plusp remaining)
-       (incf offset)
-       (decf remaining)
-       (unless (< -1 sector-offset 512)
-         (let ((x (pop chain)))
-           (when x
-             (let ((ole-stream (ole-file.stream ole-file)))
-               (seek-sector x ole-stream)
-               (read-sequence buffer ole-stream))))
-         (setq sector-offset 0))
-       (prog1 (aref buffer sector-offset)
-         (incf sector-offset)))
-      (t :eof)))
-  #+nil
-  (if (<= (ole-entry.stream-size entry)
-          (ole-header.mini-stream-cutoff-size (ole-file.header ole-file)))
-      ;;:mfat ;; TODO mini stream
-      (save-chain (ole-file.stream ole-file)
-                  (sector-chain (ole-file.fat ole-file) ;; mfat
-                                (ole-entry.starting-sector-location
-                                 (aref (ole-file.directories ole-file) 0)))
-                  filename
-                  (ole-entry.stream-size entry))
-      (save-chain (ole-file.stream ole-file)
-                  (sector-chain (ole-file.fat ole-file)
-                                (ole-entry.starting-sector-location entry))
-                  filename
-                  (ole-entry.stream-size entry))))
+  (ensure-ole-entry-stream-initialized stream)
+  (with-slots (offset ztream) stream
+    (let ((x (funcall ztream)))
+      (when x
+        (incf offset))
+      (or x :eof))))
 
 (defun call-with-ole-entry-stream (stream fn)
   (with-open-stream (x stream)
