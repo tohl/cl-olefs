@@ -339,20 +339,20 @@
   (with-slots (ole-file ole-entry chain mchain buffer size) instance
     (let ((mini (< (ole-entry.stream-size ole-entry)
                    (ole-header.mini-stream-cutoff-size (ole-file.header ole-file)))))
-      (setq chain (coerce
-                   (sector-chain
-                    (ole-file.fat ole-file)
-                    (ole-entry.starting-sector-location
-                     (if mini
-                         (aref (ole-file.directories ole-file) 0)
-                         ole-entry)))
-                   'vector)
+      (setq chain (let ((x (sector-chain
+                            (ole-file.fat ole-file)
+                            (ole-entry.starting-sector-location
+                             (if mini
+                                 (aref (ole-file.directories ole-file) 0)
+                                 ole-entry)))))
+                    (when x
+                      (coerce x 'vector)))
             mchain (when mini
-                     (coerce
-                      (sector-chain
-                       (ole-file.mfat ole-file)
-                       (ole-entry.starting-sector-location ole-entry))
-                      'vector))
+                     (let ((x (sector-chain
+                               (ole-file.mfat ole-file)
+                               (ole-entry.starting-sector-location ole-entry))))
+                       (when x
+                         (coerce x 'vector))))
             size (ole-entry.stream-size ole-entry)))))
 
 (defmethod trivial-gray-streams::stream-element-type ((stream ole-entry-stream))
@@ -362,15 +362,21 @@
   (with-slots (ole-file ole-entry offset chain mchain sector buffer size) stream
     (assert (not (minusp offset)))
     (if (< offset size)
-        (multiple-value-bind (q r) (floor offset 512)
-          (unless (eql sector q)
-            (let ((ole-stream (ole-file.stream ole-file)))
-              (seek-sector (aref chain q) ole-stream)
-              (let ((n (read-sequence buffer ole-stream)))
-                (assert (eql 512 n))))
-            (setq sector q))
-          (prog1 (aref buffer r)
-            (incf offset)))
+        (flet ((pick (q i)
+                 (unless (eql sector q)
+                   (let ((ole-stream (ole-file.stream ole-file)))
+                     (seek-sector (aref chain q) ole-stream)
+                     (let ((n (read-sequence buffer ole-stream)))
+                       (assert (eql 512 n))))
+                   (setq sector q))
+                 (prog1 (aref buffer i)
+                   (incf offset))))
+          (if mchain
+              (multiple-value-bind (mq mr) (floor offset 64)
+                (multiple-value-bind (q r) (floor (aref mchain mq) (/ 512 64))
+                  (pick q (+ (* r 64) mr))))
+              (multiple-value-bind (q r) (floor offset 512)
+                (pick q r))))
         :eof)))
 
 (defun call-with-ole-entry-stream (stream fn)
