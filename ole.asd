@@ -6,11 +6,14 @@
 (in-package :ole-system)
 
 (defsystem :ole
-  :description "Ole for Common Lisp."
+  :description "OLE for Common Lisp."
   :version ""
   :author "Tomas Hlavaty"
   :maintainer "Tomas Hlavaty"
   :licence ""
   :depends-on (:trivial-gray-streams :alexandria)
   :serial t
-  :components ((:file "ole")))
+  :components ((:file "package")
+               (:file "cdef")
+               (:file "enums")
+               (:file "ole")))

@@ -1,0 +1,2 @@
+(defpackage :ole
+  (:use :cl))

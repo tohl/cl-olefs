@@ -1,7 +1,6 @@
-(defpackage :ole
-  (:use :cl))
-
 (in-package :ole)
+
+;;; MS-CFB Compound File Binary File Format
 
 (defconstant +unused-sector+ 0)
 (defconstant +maxregsect+ #xfffffffa)
@@ -13,14 +12,6 @@
 (defconstant +maxregsig+ #xfffffffa)
 (defconstant +nostream+ #xffffffff)
 
-(deftype ubyte () '(unsigned-byte 8))
-(deftype ushort () '(unsigned-byte 16))
-(deftype wchar () '(unsigned-byte 16))
-(deftype dword () '(unsigned-byte 32))
-(deftype ulonglong () '(unsigned-byte 64))
-(deftype filetime () '(unsigned-byte 64))
-(deftype guid () '(vector ubyte 16))
-
 #+nil
 (defconstant clsid-null (make-array 16
                                     :element-type '(unsigned-byte 8)
@@ -30,6 +21,7 @@
   (if (atom type)
       (ecase type
         (ubyte (read-byte stream))
+        (achar (read-byte stream))
         (ushort (logior (read-byte stream)
                         (ash (read-byte stream) 8)))
         (wchar (logior (read-byte stream)
@@ -54,24 +46,6 @@
                              :initial-element 0)))
           (dotimes (i size x)
             (setf (aref x i) (read-value element-type stream)))))))
-
-(defmacro define-structure (name options &rest slots)
-  (declare (ignore options))
-  `(progn
-     (defstruct (,name (:conc-name ,(intern (format nil "~a." name))))
-       ,@(loop
-            for (name2 type) in slots
-            collect (list name2
-                          nil
-                          :type (if (atom type)
-                                    type
-                                    (cons 'vector type)))))
-     (defun ,(intern (format nil "READ-~a" name)) (stream)
-       (,(intern (format nil "MAKE-~a" name))
-         ,@(loop
-              for (name2 type) in slots
-              appending `(,(intern (symbol-name name2) :keyword)
-                           (read-value ',type stream)))))))
 
 (define-structure ole-header ()
   (signature (ubyte 8))
@@ -157,16 +131,9 @@
 
 (defun sector-chain (fat location)
   (labels ((rec (x)
-             (case x
-               ;;(#.+unused-sector+)
-               ;;(+maxregsect+)
-               (#.+difsect+)
-               (#.+fatsect+)
-               (#.+endofchain+)
-               (#.+freesect+)
-               (t
-                (assert (and #+nil(< +unused-sector+ x) (<= 0 x +maxregsect+)))
-                (cons x (rec (aref fat x)))))))
+             (unless (member x (list +difsect+ +fatsect+ +endofchain+ +freesect+))
+               (assert (and #+nil(< +unused-sector+ x) (<= 0 x +maxregsect+)))
+               (cons x (rec (aref fat x))))))
     (rec location)))
 
 (defun read-values (array type stream &optional (start 0) end)
@@ -262,10 +229,11 @@
                       :directories directories
                       :mfat-chain mfat-chain
                       :mfat mfat)))
-      (describe ole-file)
+      ;;(describe ole-file)
       (check-ole-header (ole-file.header ole-file))
-      (describe header)
-      (terpri)
+      ;;(describe header)
+      ;;(terpri)
+      #+nil
       (traverse-directories ole-file
                             (lambda (entry id level)
                               (declare (ignore id))
@@ -279,52 +247,8 @@
 (defmacro with-ole-file ((ole-file filename) &body body)
   `(call-with-ole-file ,filename (lambda (,ole-file) ,@body)))
 
-(defun save-chain (ole-stream chain filename length)
-  (with-open-file (s filename
-                     :direction :output
-                     :if-does-not-exist :create
-                     :if-exists :supersede
-                     :element-type '(unsigned-byte 8))
-    (let ((buf (make-array 512 :element-type '(unsigned-byte 8))))
-      (dolist (x chain)
-        (seek-sector x ole-stream)
-        (let ((n (read-sequence buf ole-stream)))
-          (decf length n)
-          (write-sequence buf s :end (if (plusp length) n (+ length 512))))))))
-
-(defun save-entry-stream (ole-file entry filename)
-  (if (<= (ole-entry.stream-size entry)
-          (ole-header.mini-stream-cutoff-size (ole-file.header ole-file)))
-      (save-chain (ole-file.stream ole-file) ;; TODO mini stream, mfat?
-                  (sector-chain (ole-file.fat ole-file) ;; mfat?
-                                (ole-entry.starting-sector-location
-                                 (aref (ole-file.directories ole-file) 0)))
-                  filename
-                  (ole-entry.stream-size entry))
-      (save-chain (ole-file.stream ole-file)
-                  (sector-chain (ole-file.fat ole-file)
-                                (ole-entry.starting-sector-location entry))
-                  filename
-                  (ole-entry.stream-size entry))))
-
-(defun extract-ole-file (filename)
-  (with-ole-file (ole-file filename)
-    (traverse-directories
-     ole-file
-     (lambda (entry id level)
-       (declare (ignore id level))
-       (case (ole-entry.object-type entry)
-         ;;(1 "storage")
-         (2 ;; stream
-          (save-entry-stream ole-file
-                             entry
-                             (format nil "/tmp/~a"
-                                     (ole-entry-name-to-string
-                                      (ole-entry.name entry)
-                                      (ole-entry.name-length entry))))))))))
-
-
-(defclass ole-entry-stream (trivial-gray-streams:fundamental-binary-input-stream)
+(defclass ole-entry-stream (trivial-gray-streams:fundamental-binary-input-stream
+                            trivial-gray-streams:trivial-gray-stream-mixin)
   ((ole-file :initarg :ole-file)
    (ole-entry :initarg :ole-entry)
    (offset :initform 0)
@@ -358,6 +282,10 @@
 (defmethod trivial-gray-streams::stream-element-type ((stream ole-entry-stream))
   '(unsigned-byte 8))
 
+(defmethod trivial-gray-streams:stream-file-position ((stream ole-entry-stream))
+  (with-slots (offset) stream
+    offset))
+
 (defmethod trivial-gray-streams:stream-read-byte ((stream ole-entry-stream))
   (with-slots (ole-file ole-entry offset chain mchain sector buffer size) stream
     (assert (not (minusp offset)))
@@ -388,49 +316,125 @@
     (make-instance 'ole-entry-stream :ole-file ,ole-file :ole-entry ,ole-entry)
     (lambda (,var) ,@body)))
 
-
-(define-structure OfficeArtRecordHeader ()
-  (recVer ushort :always 0)
-  (recInstance ushort :member '(#x46A #x46B #x6E2 #x6E3))
-  (recType ushort :always #xF01D)
-  (recLen ushort))
-
-(define-structure OfficeArtBlipJPEG ()
-  ;;(rh OfficeArtRecordHeader)
-  (rgbUid1 guid)
-  (rgbUid2 guid ;;:optional '(when (member recInstance '(#x46B #x6E3)))
-           )
-  (tag ubyte)
-  #+nil(BLIBFileData))
-
-(defun extract-ole-file2 (filename)
+(defun extract-ole-file (filename &optional (dir "/tmp"))
   (with-ole-file (ole-file filename)
-    (traverse-directories
-     ole-file
-     (lambda (entry id level)
-       (declare (ignore id level))
-       (case (ole-entry.object-type entry)
-         ;;(1 "storage")
-         (2 ;; stream
-          (let ((entry-name (ole-entry-name-to-string
-                             (ole-entry.name entry)
-                             (ole-entry.name-length entry))))
-            (with-ole-entry-stream (in ole-file entry)
-              (with-open-file (out (format nil "/tmp/a/~a" entry-name)
-                                   :direction :output
-                                   :if-does-not-exist :create
-                                   :if-exists :supersede
-                                   :element-type '(unsigned-byte 8))
-                (alexandria:copy-stream in out)))
-            (when (equal "Pictures" entry-name)
+    (with-open-file (html (format nil "~a/index.html" dir)
+                          :direction :output
+                          :if-does-not-exist :create
+                          :if-exists :supersede
+                          :element-type 'character)
+      (traverse-directories
+       ole-file
+       (lambda (entry id level)
+         (declare (ignore id level))
+         (case (ole-entry.object-type entry)
+           ;;(1 "storage")
+           (2 ;; stream
+            (let ((entry-name (ole-entry-name-to-string
+                               (ole-entry.name entry)
+                               (ole-entry.name-length entry))))
               (with-ole-entry-stream (in ole-file entry)
-                (print (read-OfficeArtRecordHeader in))
-                (print (read-value 'guid in))
-                (read-value 'ubyte in)
-                (with-open-file (out "/tmp/a/a.jpeg"
+                (with-open-file (out (format nil "~a/~a" dir entry-name)
                                      :direction :output
                                      :if-does-not-exist :create
                                      :if-exists :supersede
                                      :element-type '(unsigned-byte 8))
-                  (alexandria:copy-stream in out)))))))))))
+                  (alexandria:copy-stream in out)))
+              #+nil
+              (when (equal "Current User" entry-name)
+                (with-ole-entry-stream (in ole-file entry)
+                  (print (read-record dir in))))
+              (when (equal "Pictures" entry-name)
+                (with-ole-entry-stream (in ole-file entry)
+                  (loop
+                     for n from 1
+                     while t ;; TODO until eof!
+                     do (multiple-value-bind (blib kind)
+                            (read-record in dir n)
+                          (format html "<p><img src=\"_~d.~(~a~)\">~%" n kind)))))))))))))
 
+;;; MS-PPT PowerPoint (.ppt) Binary File Format
+
+(define-structure RecordHeader ()
+  (%dummy1 ubyte)
+  (%dummy2 ubyte)
+  (recVer t :compute (logand #x0f %dummy1))
+  (recInstance t :compute (logior (ash %dummy2 4) (ash %dummy1 -4)))
+  (recType ushort)
+  (recLen dword))
+
+(define-structure CurrentUserAtom ()
+  (size dword :always #x14)
+  (headerToken dword)
+  (offsetToCurrentEdit dword)
+  (lenUserName ushort)
+  (docFileVersion ushort)
+  (majorVersion ubyte)
+  (minorVersion ubyte)
+  (unused ushort)
+  (ansiUserName (achar lenUserName))
+  (relVersion dword)
+  (unicodeUserName (wchar lenUserName)))
+
+;;; MS-ODRAW Office Drawing Binary File Format
+
+(defclass shorter-stream (trivial-gray-streams:fundamental-binary-input-stream
+                          trivial-gray-streams:trivial-gray-stream-mixin)
+  ((wrap :initarg :wrap)
+   (size :initarg :size)
+   (offset :initform 0)))
+
+(defmethod trivial-gray-streams::stream-element-type ((stream shorter-stream))
+  '(unsigned-byte 8))
+
+(defmethod trivial-gray-streams:stream-file-position ((stream shorter-stream))
+  (with-slots (offset) stream
+    offset))
+
+(defmethod trivial-gray-streams:stream-read-byte ((stream shorter-stream))
+  (with-slots (wrap size offset) stream
+    (cond
+      ((< offset size)
+       (incf offset)
+       (read-byte wrap))
+      (t :eof))))
+
+(defun call-with-shorter-stream (stream fn)
+  (with-open-stream (x stream)
+    (funcall fn x)))
+
+(defmacro with-shorter-stream ((var wrap size) &body body)
+  `(call-with-shorter-stream
+    (make-instance 'shorter-stream :wrap ,wrap :size ,size)
+    (lambda (,var) ,@body)))
+
+(defun read-record (stream dir &optional n) ;; TODO remove dir and n
+  (let ((x (read-RecordHeader stream)))
+    (with-slots (recVer recInstance recType recLen) x
+      (flet ((blip (ext)
+               (with-shorter-stream (in stream (RecordHeader.recLen x))
+                 (list x
+                       (read-value 'guid in)
+                       (read-value 'ubyte in)
+                       (with-open-file (out (format nil "~a/_~d.~a" dir n ext)
+                                            :direction :output
+                                            :if-does-not-exist :create
+                                            :if-exists :supersede
+                                            :element-type '(unsigned-byte 8))
+                         (alexandria:copy-stream in out))))))
+        (ecase recType
+          (#.RT_CurrentUserAtom
+           (assert (zerop recVer))
+           (assert (zerop recInstance))
+           (list x (read-CurrentUserAtom stream))
+           #+nil
+           (with-shorter-stream (in stream (RecordHeader.recLen x))
+             (list x (read-CurrentUserAtom in)))) ;; why recLen too small?
+          ((#xF01E)                               ;; OfficeArtBlipPNG
+           (assert (zerop recVer))
+           (assert (member recInstance '(#x6e0 #x6e1)))
+           (values (blip "png") :png))
+          (#xF01D ;; OfficeArtBlipJPEG
+           (assert (zerop recVer))
+           (assert (member recInstance '(#x46A #x46B #x6E2 #x6E3)))
+           (values (blip "jpeg") :jpeg)))))))
