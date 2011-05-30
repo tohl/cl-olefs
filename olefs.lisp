@@ -286,6 +286,11 @@
   (with-slots (offset) stream
     offset))
 
+(defmethod (setf trivial-gray-streams:stream-file-position) (x (stream ole-entry-stream))
+  (with-slots (offset sector) stream
+    (setf offset x
+          sector nil)))
+
 (defmethod trivial-gray-streams:stream-read-byte ((stream ole-entry-stream))
   (with-slots (ole-file ole-entry offset chain mchain sector buffer size) stream
     (assert (not (minusp offset)))
@@ -484,3 +489,115 @@
            (assert (zerop recVer))
            (assert (member recInstance '(#x46A #x46B #x6E2 #x6E3)))
            (values (blip "jpeg" '(#x46B #x6E3)) :jpeg)))))))
+
+(defun walk-RecordHeader-tree (ole-file entry fn)
+  (with-ole-entry-stream (in ole-file entry)
+    (labels ((rec (level pos)
+               (handler-case
+                   (loop
+                      for i from 0
+                      until (<= 1 pos (file-position in))
+                      do (let* ((h (read-RecordHeader in))
+                                (start (file-position in))
+                                (end (+ start (RecordHeader.recLen h))))
+                           (funcall fn in level i h start end)
+                           (if (= #xf (RecordHeader.recVer h))
+                               (rec (1+ level)
+                                    (if (plusp pos)
+                                        (min pos end)
+                                        end))
+                               (file-position in end))))
+                 (end-of-file ()
+                   (assert (zerop level))))))
+      (rec 0 0))))
+
+(defun print-RecordHeader-tree (ole-file entry)
+  (walk-RecordHeader-tree
+   ole-file
+   entry
+   (lambda (in level i h start end)
+     (declare (ignore in))
+     (dotimes (j (* 2 level))
+       (write-char #\space))
+     (format t "~d #x~x #x~x #x~x ~d :: ~d ~d~%"
+             i
+             (RecordHeader.recVer h)
+             (RecordHeader.recInstance h)
+             (RecordHeader.recType h)
+             (RecordHeader.recLen h)
+             start end))))
+
+(defun print-RecordHeader-tree-from-ppt-file (filename)
+  (with-ole-file (ole-file filename)
+    (traverse-directories
+     ole-file
+     (lambda (entry id level)
+       (declare (ignore id level))
+       (case (ole-entry.object-type entry)
+         (2 ;; stream
+          (let ((entry-name (ole-entry-name-to-string
+                             (ole-entry.name entry)
+                             (ole-entry.name-length entry))))
+            (when (equal "PowerPoint Document" entry-name)
+              (print-RecordHeader-tree ole-file entry)))))))))
+
+(defun utf-char (n)                ;; TODO utf properly
+  (if (member n '(#x0a #x0b #x0d)) ;; #x0b = vertical tab
+      "<br/>"
+      (code-char n)))
+
+(defun ascii-char (n)
+  (if (member n '(#x0a #x0b #x0d)) ;; #x0b = vertical tab
+      "<br/>"
+      (code-char n)))
+
+(defun ppt-entry-to-html (ole-file entry stream title)
+  (macrolet ((out (&rest args)
+               `(format stream ,@args)))
+    (let ((slide-no 0))
+      (out "<html>~%<head>~%")
+      (when title
+        (out "<title>~a</title>\n" title))
+      (out "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\"/>~%")
+      (out "</head>~%<body>~%")
+      (walk-RecordHeader-tree
+       ole-file
+       entry
+       (lambda (in level i h start end)
+         (declare (ignore i level start end))
+         (case (RecordHeader.recType h)
+           ((#x0fa0  ;; RT_TextCharsAtom utf16le
+             #x0fba) ;; RT_CString
+            (out "<p>")
+            (loop
+               for j from 0 below (RecordHeader.recLen h) by 2
+               do (out "~a" (utf8-char (read-value 'ushort in))))
+            (out "</p>~%"))
+           (#x0fa8 ;; RT_TextBytesAtom ascii
+            (out "<p>")
+            (loop
+               for j from 0 below (RecordHeader.recLen h)
+               do (out "~a" (ascii-char (read-byte in))))
+            (out "</p>~%"))
+           ((#x03ee  ;; RT_Slide
+             #x03e8) ;; RT_Document
+            (when (plusp slide-no)
+              (out "<hr/>~%</div>~%"))
+            (out "<div class=\"slide\">~%<h1>Slide ~d</h1>~%" (incf slide-no))))))
+      (when (plusp slide-no)
+        (out "</div>~%"))
+      (out "</body>~%</html>~%"))))
+
+(defun ppt-file-to-html (filename &optional (stream *standard-output*))
+  (with-ole-file (ole-file filename)
+    (traverse-directories
+     ole-file
+     (lambda (entry id level)
+       (declare (ignore id level))
+       (case (ole-entry.object-type entry)
+         (2 ;; stream
+          (let ((entry-name (ole-entry-name-to-string
+                             (ole-entry.name entry)
+                             (ole-entry.name-length entry))))
+            (when (equal "PowerPoint Document" entry-name)
+              (ppt-entry-to-html ole-file entry stream filename)))))))))
