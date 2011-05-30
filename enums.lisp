@@ -1,4 +1,4 @@
-(in-package :ole)
+(in-package :olefs)
 
 (defconstant RT_Document #x03E8)
 (defconstant RT_DocumentAtom #x03E9)

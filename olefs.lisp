@@ -1,4 +1,4 @@
-(in-package :ole)
+(in-package :olefs)
 
 ;;; MS-CFB Compound File Binary File Format
 

@@ -1,4 +1,4 @@
-(in-package :ole)
+(in-package :olefs)
 
 (deftype achar () '(unsigned-byte 8))
 (deftype ubyte () '(unsigned-byte 8))

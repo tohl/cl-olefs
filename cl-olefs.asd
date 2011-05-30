@@ -1,12 +1,12 @@
 ;; -*- lisp; -*-
 
-(defpackage :ole-system
+(defpackage :cl-olefs-system
   (:use :asdf :cl))
 
-(in-package :ole-system)
+(in-package :cl-olefs-system)
 
-(defsystem :ole
-  :description "OLE for Common Lisp."
+(defsystem :cl-olefs
+  :description "OLE File System tools for Common Lisp."
   :version ""
   :author "Tomas Hlavaty"
   :maintainer "Tomas Hlavaty"
@@ -16,4 +16,4 @@
   :components ((:file "package")
                (:file "cdef")
                (:file "enums")
-               (:file "ole")))
+               (:file "olefs")))

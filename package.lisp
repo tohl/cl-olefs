@@ -1,2 +1,2 @@
-(defpackage :ole
+(defpackage :olefs
   (:use :cl))
