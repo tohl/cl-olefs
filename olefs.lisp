@@ -428,8 +428,8 @@
   (rcBounds RECT)
   (ptSize POINT)
   (cbSave dword)
-  (compression byte :member '(#x00 #xfe))
-  (filter byte :always #xfe))
+  (compression ubyte :member '(#x00 #xfe))
+  (filter ubyte :always #xfe))
 
 (defun read-record (stream dir &optional n) ;; TODO remove dir and n
   (let ((x (read-RecordHeader stream)))
