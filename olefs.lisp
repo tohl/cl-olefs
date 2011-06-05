@@ -356,6 +356,7 @@
                      while t ;; TODO until eof!
                      do (multiple-value-bind (blib kind)
                             (read-record in dir n)
+                          (declare (ignore blib))
                           (format html "<p><img src=\"_~d.~(~a~)\">~%" n kind)))))))))))))
 
 ;;; MS-PPT PowerPoint (.ppt) Binary File Format
@@ -557,7 +558,7 @@
     (let ((slide-no 0))
       (out "<html>~%<head>~%")
       (when title
-        (out "<title>~a</title>\n" title))
+        (out "<title>~a</title>~%" title))
       (out "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\"/>~%")
       (out "</head>~%<body>~%")
       (walk-RecordHeader-tree
@@ -571,7 +572,7 @@
             (out "<p>")
             (loop
                for j from 0 below (RecordHeader.recLen h) by 2
-               do (out "~a" (utf8-char (read-value 'ushort in))))
+               do (out "~a" (utf-char (read-value 'ushort in))))
             (out "</p>~%"))
            (#x0fa8 ;; RT_TextBytesAtom ascii
             (out "<p>")
