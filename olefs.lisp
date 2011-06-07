@@ -520,13 +520,15 @@
      (declare (ignore in))
      (dotimes (j (* 2 level))
        (write-char #\space))
-     (format t "~d #x~x #x~x #x~x ~d :: ~d ~d~%"
+     (format t "~d #x~x #x~x #x~x ~d :: ~d ~d :: ~a~%"
              i
              (RecordHeader.recVer h)
              (RecordHeader.recInstance h)
              (RecordHeader.recType h)
              (RecordHeader.recLen h)
-             start end))))
+             start
+             end
+             (enum-by-value 'RecordType (RecordHeader.recType h))))))
 
 (defun print-RecordHeader-tree-from-ppt-file (filename)
   (with-ole-file (ole-file filename)
