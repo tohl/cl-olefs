@@ -241,7 +241,6 @@
                                 (write-string "   "))
                               (print-ole-entry entry *standard-output*)
                               (terpri)))
-      ;; TODO small block chain for root entry
       (funcall fn ole-file))))
 
 (defmacro with-ole-file ((ole-file filename) &body body)
@@ -333,7 +332,6 @@
        (lambda (entry id level)
          (declare (ignore id level))
          (case (ole-entry.object-type entry)
-           ;;(1 "storage")
            (2 ;; stream
             (let ((entry-name (ole-entry-name-to-string
                                (ole-entry.name entry)
