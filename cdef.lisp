@@ -55,23 +55,23 @@
                            (intern (symbol-name (car slot)) :keyword)
                            (car slot))))))))
 
-(defvar *enums* nil)
+(defgeneric enum-by-key (name key))
+(defgeneric enum-by-value (name value))
 
 (defmacro defenum (name args &rest values)
   (declare (ignore args))
-  (pushnew (cons name (mapcar (lambda (x) (cons (car x) (cadr x))) values))
-           *enums*
-           :key #'car)
   `(progn
+     (defmethod enum-by-key ((name (eql ',name)) key)
+       (cdr (assoc key ',(loop
+                            for (k v) in values
+                            collect (cons k v)))))
+     (defmethod enum-by-value ((name (eql ',name)) value)
+       (cdr (assoc value ',(loop
+                              for (k v) in values
+                              collect (cons v k)))))
      ,@(loop
           for (k v) in values
           collect `(defconstant ,k ,v))))
-
-(defun enum-by-key (name key)
-  (cdr (assoc key (cdr (assoc name *enums*)))))
-
-(defun enum-by-value (name value)
-  (car (find value (cdr (assoc name *enums*)) :key #'cdr)))
 
 ;;(enum-by-key 'RecordType 'RT_DocumentAtom)
 ;;(enum-by-value 'RecordType #x03E9)
