@@ -343,19 +343,28 @@
                                      :if-exists :supersede
                                      :element-type '(unsigned-byte 8))
                   (alexandria:copy-stream in out)))
-              #+nil
-              (when (equal "Current User" entry-name)
-                (with-ole-entry-stream (in ole-file entry)
-                  (print (read-record dir in))))
               (when (equal "Pictures" entry-name)
-                (with-ole-entry-stream (in ole-file entry)
-                  (loop
-                     for n from 1
-                     while t ;; TODO until eof!
-                     do (multiple-value-bind (blib kind)
-                            (read-record in dir n)
-                          (declare (ignore blib))
-                          (format html "<p><img src=\"_~d.~(~a~)\">~%" n kind)))))))))))))
+                (walk-RecordHeader-tree
+                 ole-file
+                 entry
+                 (lambda (in level i h start end)
+                   (declare (ignore level start end))
+                   (multiple-value-bind (blib kind)
+                       (read-record-body
+                        in
+                        h
+                        (lambda (blip in)
+                          (with-open-file (out (format nil "~a/~d.~a"
+                                                       dir
+                                                       i
+                                                       (blip-ext blip))
+                                               :direction :output
+                                               :if-does-not-exist :create
+                                               :if-exists :supersede
+                                               :element-type '(unsigned-byte 8))
+                            (alexandria:copy-stream in out))))
+                     (declare (ignore blib))
+                     (format html "<p><img src=\"_~d.~(~a~)\">~%" i kind)))))))))))))
 
 ;;; MS-PPT PowerPoint (.ppt) Binary File Format
 
