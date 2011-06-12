@@ -439,24 +439,39 @@
   (compression ubyte :member '(#x00 #xfe))
   (filter ubyte :always #xfe))
 
-(defun read-record (stream dir &optional n) ;; TODO remove dir and n
-  (let ((x (read-RecordHeader stream)))
+(define-structure PersistDirectoryEntry ()
+  ;; (%dummy1 ubyte)
+  ;; (%dummy2 ubyte)
+  ;; (%dummy3 ubyte)
+  ;; (%dummy4 ubyte)
+  (%dummy dword)
+  (persistId t :compute (ash %dummy -12))
+  (cPersist t :compute (logand #x0fff %dummy))
+  (rgPersistOffset (dword cPersist)))
+
+(defstruct blip header ext guid guid2 metafileHeader)
+
+(defun read-record-body (stream RecordHeader &optional fn)
+  (let ((x RecordHeader #+nil(read-RecordHeader stream)))
     (with-slots (recVer recInstance recType recLen) x
       (flet ((blip (ext guid2 &optional metafileHeader)
                (with-shorter-stream (in stream (RecordHeader.recLen x))
-                 (list x ;; TODO make struct
-                       (read-value 'guid in)
-                       (when (member recInstance guid2)
-                         (read-value 'guid in))
-                       (if metafileHeader
-                           (read-value 'OfficeArtMetafileHeader in)
-                           (read-value 'ubyte in))
-                       (with-open-file (out (format nil "~a/_~d.~a" dir n ext)
-                                            :direction :output
-                                            :if-does-not-exist :create
-                                            :if-exists :supersede
-                                            :element-type '(unsigned-byte 8))
-                         (alexandria:copy-stream in out))))))
+                 (let* ((start (file-position stream))
+                        (end (+ start (RecordHeader.recLen x)))
+                        (y (make-blip
+                            :header x
+                            :ext ext
+                            :guid (read-value 'guid in)
+                            :guid2 (when (member recInstance guid2)
+                                     (read-value 'guid in))
+                            :metafileHeader (if metafileHeader
+                                                (read-value 'OfficeArtMetafileHeader in)
+                                                (read-value 'ubyte in)))))
+                   (when fn
+                     (funcall fn y in))
+                   (unless (eql end (file-position stream))
+                     (file-position stream end))
+                   y))))
         (ecase recType
           (#.RT_CurrentUserAtom
            (assert (zerop recVer))
@@ -465,38 +480,63 @@
            #+nil ;; why recLen too small?
            (with-shorter-stream (in stream (RecordHeader.recLen x))
              (list x (read-CurrentUserAtom in))))
-          ((#xF01A) ;; OfficeArtBlipEMF
+          (#.RT_UserEditAtom
+           (assert (zerop recVer))
+           (assert (zerop recInstance))
+           (with-shorter-stream (in stream (RecordHeader.recLen x))
+             (list x (read-UserEditAtom in))))
+          (#.RT_PersistDirectoryAtom ;; TODO
+           (assert (zerop recVer))
+           (assert (zerop recInstance))
+           (print (RecordHeader.recLen x))
+           (with-shorter-stream (in stream (RecordHeader.recLen x))
+             (list x
+                   (read-PersistDirectoryEntry in)
+                   #+nil
+                   (loop
+                      for fpos = 0 then (file-position in)
+                      while (< fpos (RecordHeader.recLen x))
+                      collect (progn
+                                (print fpos)
+                                (read-PersistDirectoryEntry in))))))
+          #+nil
+          (#.RT_Document ;; TODO
+           )
+          (#.RT_OfficeArtBlipEMF
            (assert (zerop recVer))
            (assert (member recInstance '(#x3d4 #x3d5)))
            (values (blip "emf" '(#x3d5) t) :emf))
-          ((#xF01B) ;; OfficeArtBlipWMF
+          (#.RT_OfficeArtBlipWMF
            (assert (zerop recVer))
            (assert (member recInstance '(#x216 #x217)))
            (values (blip "wmf" '(#x217) t) :wmf))
-          ((#xF01C) ;; OfficeArtBlipPICT
+          (#.RT_OfficeArtBlipPICT
            (assert (zerop recVer))
            (assert (member recInstance '(#x542 #x543)))
            (values (blip "pict" '(#x543) t) :pict))
-          (#xF01D ;; OfficeArtBlipJPEG
+          (#.RT_OfficeArtBlipJPEG1
            (assert (zerop recVer))
            (assert (member recInstance '(#x46A #x46B #x6E2 #x6E3)))
            (values (blip "jpeg" '(#x46B #x6E3)) :jpeg))
-          ((#xF01E) ;; OfficeArtBlipPNG
+          (#.RT_OfficeArtBlipPNG
            (assert (zerop recVer))
            (assert (member recInstance '(#x6e0 #x6e1)))
            (values (blip "png"'(#x6e1)) :png))
-          ((#xF01F) ;; OfficeArtBlipDIB
+          (#.RT_OfficeArtBlipDIB
            (assert (zerop recVer))
            (assert (member recInstance '(#x7a8 #x7a9)))
            (values (blip "dib" '(#x7a9)) :dib))
-          ((#xF029) ;; OfficeArtBlipTIFF
+          (#.RT_OfficeArtBlipTIFF
            (assert (zerop recVer))
            (assert (member recInstance '(#x6e4 #x6e5)))
            (values (blip "tiff" '(#x6e5)) :tiff))
-          ((#xF02A) ;; OfficeArtBlipJPEG
+          (#.RT_OfficeArtBlipJPEG2
            (assert (zerop recVer))
            (assert (member recInstance '(#x46A #x46B #x6E2 #x6E3)))
            (values (blip "jpeg" '(#x46B #x6E3)) :jpeg)))))))
+
+(defun read-record (stream &optional fn)
+  (read-record-body stream (read-RecordHeader stream) fn))
 
 (defun walk-RecordHeader-tree (ole-file entry fn)
   (with-ole-entry-stream (in ole-file entry)
