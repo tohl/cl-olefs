@@ -601,6 +601,80 @@
       "<br/>"
       (code-char n)))
 
+(defun ppt-entry-to-html-naive (ole-file entry stream title)
+  (macrolet ((out (&rest args)
+               `(format stream ,@args)))
+    (let ((slide-no 0))
+      (out "<html>~%<head>~%")
+      (when title
+        (out "<title>~a</title>~%" title))
+      (out "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\"/>~%")
+      (out "</head>~%<body>~%")
+      (walk-RecordHeader-tree
+       ole-file
+       entry
+       (lambda (in level i h start end)
+         (declare (ignore i level start end))
+         (case (RecordHeader.recType h)
+           (#.RT_Document
+            (out "<div><p>@@@ ~a #x~x ~a</p>~%"
+                 (RecordHeader.recType h)
+                 (RecordHeader.recType h)
+                 (enum-by-value 'RecordType (RecordHeader.recType h))))
+           (#.RT_Slide
+            (out "<hr/>~%</div>~%")
+            (incf slide-no)
+            (out "<div class=\"slide\">~%<h1><a name=\"slide~d\">Slide ~d</a></h1>~%"
+                 slide-no slide-no)
+            (out "<pre><a href=\"#slide~d\">&lt;</a> <a href=\"#slide~d\">&gt;</a></pre>~%"
+                 (1- slide-no) (1+ slide-no)))
+           ((#.RT_TextCharsAtom #.RT_CString) ;; utf16le
+            (out "<p>")
+            (loop
+               for j from 0 below (RecordHeader.recLen h) by 2
+               do (out "~a" (utf-char (read-value 'ushort in))))
+            (out "</p>~%"))
+           (#.RT_TextBytesAtom ;; ascii
+            (out "<p>")
+            (loop
+               for j from 0 below (RecordHeader.recLen h)
+               do (out "~a" (ascii-char (read-byte in))))
+            (out "</p>~%"))
+           (t (out "<p>@@@ ~a #x~x ~a</p>~%"
+                   (RecordHeader.recType h)
+                   (RecordHeader.recType h)
+                   (enum-by-value 'RecordType (RecordHeader.recType h)))))))
+      (when (plusp slide-no)
+        (out "</div>~%"))
+      (out "</body>~%</html>~%"))))
+
+(defun ppt-file-to-html-naive (filename &optional (stream *standard-output*))
+  (with-ole-file (ole-file filename)
+    (traverse-directories
+     ole-file
+     (lambda (entry id level)
+       (declare (ignore id level))
+       (case (ole-entry.object-type entry)
+         (2 ;; stream
+          (let ((entry-name (ole-entry-name-to-string
+                             (ole-entry.name entry)
+                             (ole-entry.name-length entry))))
+            (when (equal "PowerPoint Document" entry-name)
+              (ppt-entry-to-html-naive ole-file entry stream filename)))))))))
+
+(define-structure UserEditAtom ()
+  (lastSlideIdRef dword)
+  (version ushort)
+  (minorVersion ubyte :always 0)
+  (majorVersion ubyte :always 3)
+  (offsetLastEdit dword)
+  (offsetPersistDirectory dword)
+  (docPersistIdRef dword :always 1)
+  (persistIdSeed dword)
+  (lastView ushort)
+  (unused ushort)
+  #+nil(encryptSessionPersistIdRef dword)) ;; TODO optional
+
 (defun ppt-entry-to-html (ole-file entry stream title)
   (macrolet ((out (&rest args)
                `(format stream ,@args)))
@@ -616,38 +690,85 @@
        (lambda (in level i h start end)
          (declare (ignore i level start end))
          (case (RecordHeader.recType h)
-           ((#x0fa0  ;; RT_TextCharsAtom utf16le
-             #x0fba) ;; RT_CString
+           (#.RT_Document
+            (out "<div>~%"))
+           ((#.RT_TextCharsAtom #.RT_CString) ;; utf16le
             (out "<p>")
             (loop
                for j from 0 below (RecordHeader.recLen h) by 2
                do (out "~a" (utf-char (read-value 'ushort in))))
             (out "</p>~%"))
-           (#x0fa8 ;; RT_TextBytesAtom ascii
+           (#.RT_TextBytesAtom ;; ascii
             (out "<p>")
             (loop
                for j from 0 below (RecordHeader.recLen h)
                do (out "~a" (ascii-char (read-byte in))))
             (out "</p>~%"))
-           ((#x03ee  ;; RT_Slide
-             #x03e8) ;; RT_Document
-            (when (plusp slide-no)
-              (out "<hr/>~%</div>~%"))
-            (out "<div class=\"slide\">~%<h1>Slide ~d</h1>~%" (incf slide-no))))))
-      (when (plusp slide-no)
-        (out "</div>~%"))
-      (out "</body>~%</html>~%"))))
+           (#.RT_Slide
+            (out "<hr/>~%</div>~%<div class=\"slide\">~%<h1>Slide ~d</h1>~%" (incf slide-no))))))
+      (out "</div>~%</body>~%</html>~%"))))
+
+(defun process-PersistDirectoryAtom (htab in)
+  (let ((d (cadr (read-record in))))
+    (with-slots (persistId cPersist rgPersistOffset) d
+      (loop
+         for n from 0
+         for o across rgPersistOffset
+         do (let ((k (+ persistId n)))
+              (print (list k :-> o))
+              (setf (gethash k htab) o)))))
+  #+nil
+  (loop
+     for d = (cadr (read-record in)) ;;then (cadr (read-record in))
+     do (with-slots (persistId cPersist rgPersistOffset) d
+          (loop
+             for n from 0
+             for o across rgPersistOffset
+             do (let ((k (+ persistId n)))
+                  (print (list k :-> o))
+                  (setf (gethash k htab) o))))))
 
 (defun ppt-file-to-html (filename &optional (stream *standard-output*))
   (with-ole-file (ole-file filename)
-    (traverse-directories
-     ole-file
-     (lambda (entry id level)
-       (declare (ignore id level))
-       (case (ole-entry.object-type entry)
-         (2 ;; stream
-          (let ((entry-name (ole-entry-name-to-string
-                             (ole-entry.name entry)
-                             (ole-entry.name-length entry))))
-            (when (equal "PowerPoint Document" entry-name)
-              (ppt-entry-to-html ole-file entry stream filename)))))))))
+    (let ((u (block CurrentUser
+               (traverse-directories
+                ole-file
+                (lambda (entry id level)
+                  (declare (ignore id level))
+                  (case (ole-entry.object-type entry)
+                    (2 ;; stream
+                     (let ((entry-name (ole-entry-name-to-string
+                                        (ole-entry.name entry)
+                                        (ole-entry.name-length entry))))
+                       (when (equal "Current User" entry-name)
+                         (walk-RecordHeader-tree
+                          ole-file
+                          entry
+                          (lambda (in level i h start end)
+                            (declare (ignore level i start end))
+                            (return-from CurrentUser
+                              (cadr (read-record-body in h))))))))))))))
+      (describe u)
+      (traverse-directories
+       ole-file
+       (lambda (entry id level)
+         (declare (ignore id level))
+         (case (ole-entry.object-type entry)
+           (2 ;; stream
+            (let ((entry-name (ole-entry-name-to-string
+                               (ole-entry.name entry)
+                               (ole-entry.name-length entry))))
+              (when (equal "PowerPoint Document" entry-name)
+                (with-ole-entry-stream (in ole-file entry)
+                  (let ((htab (make-hash-table))) ;; persist oid -> fpos
+                    (file-position in (CurrentUserAtom.offsetToCurrentEdit u))
+                    (loop
+                       for e = (cadr (read-record in)) then (cadr (read-record in))
+                       do (progn
+                            (describe e)
+                            (file-position in (UserEditAtom.offsetPersistDirectory e))
+                            (process-PersistDirectoryAtom htab in))
+                       until (zerop (UserEditAtom.offsetLastEdit e))
+                       do (file-position in (UserEditAtom.offsetLastEdit e))))
+                  #+nil(file-position in 0)
+                  #+nil(print (read-record in))))))))))))
