@@ -601,10 +601,33 @@
       "<br/>"
       (code-char n)))
 
-(defun ppt-entry-to-html-naive (ole-file entry stream title)
+(define-structure OfficeArtFOPTEOPID ()
+  (%dummy ushort)
+  (opid t :compute (logand #x3fff %dummy))
+  (fBid t :compute (if (zerop (logand #x4000 %dummy)) nil t))
+  (fComplex t :compute (if (zerop (logand #x8000 %dummy)) nil t)))
+
+(define-structure OfficeArtFBSE ()
+  (btWin32 ubyte)
+  (btMacOS ubyte)
+  (rgbUid GUID)
+  (tag ushort)
+  (size dword)
+  (cRef dword)
+  (foDelay dword)
+  (unused1 ubyte)
+  (cbName ubyte)
+  (unused2 ubyte)
+  (unused3 ubyte)
+  #+nil(nameData (ubyte cbName))
+  #+nil(embeddedBlip (ubyte size)))
+
+(defun ppt-entry-to-html-naive (ole-file entry stream title pictures)
   (macrolet ((out (&rest args)
                `(format stream ,@args)))
-    (let ((slide-no 0))
+    (let ((slide-no 0)
+          (blip-no 0)
+          (blips nil))
       (out "<html>~%<head>~%")
       (when title
         (out "<title>~a</title>~%" title))
@@ -617,10 +640,23 @@
          (declare (ignore i level start end))
          (case (RecordHeader.recType h)
            (#.RT_Document
+            #+nil
             (out "<div><p>@@@ ~a #x~x ~a</p>~%"
                  (RecordHeader.recType h)
                  (RecordHeader.recType h)
                  (enum-by-value 'RecordType (RecordHeader.recType h))))
+           (#.RT_OfficeArtFBSE
+            (let* ((x (read-OfficeArtFBSE in))
+                   (y (find (OfficeArtFBSE.foDelay x) pictures :key #'cadr)))
+              (assert y)
+              (push (list (incf blip-no) (car y) (caddr y)) blips)
+              #+nil
+              (out "<div><p>@@@ ~a #x~x ~a === img ~s ~s</p>~%"
+                   (RecordHeader.recType h)
+                   (RecordHeader.recType h)
+                   (enum-by-value 'RecordType (RecordHeader.recType h))
+                   blip-no
+                   (OfficeArtFBSE.foDelay x))))
            (#.RT_Slide
             (out "<hr/>~%</div>~%")
             (incf slide-no)
@@ -640,6 +676,28 @@
                for j from 0 below (RecordHeader.recLen h)
                do (out "~a" (ascii-char (read-byte in))))
             (out "</p>~%"))
+           (#.RT_OfficeArtFOPT
+            #+nil
+            (out "<p>!!! ~a #x~x ~a</p>~%"
+                 (RecordHeader.recType h)
+                 (RecordHeader.recType h)
+                 (enum-by-value 'RecordType (RecordHeader.recType h)))
+            (with-shorter-stream (s in (RecordHeader.recLen h))
+              (let ((len (RecordHeader.recLen h)))
+                (loop
+                   while (< (file-position s) len)
+                   do (let ((opid (read-OfficeArtFOPTEOPID s))
+                            (value (read-value 'dword s)))
+                        ;;(out "<p>...... ~s ~s</p>~%" opid value)
+                        (when (OfficeArtFOPTEOPID.fComplex opid)
+                          (decf len value))
+                        (case (OfficeArtFOPTEOPID.opid opid)
+                          (#.pib
+                           (assert (OfficeArtFOPTEOPID.fBid opid))
+                           (destructuring-bind (j n ext) (assoc value blips)
+                             (assert (and j n ext))
+                             (out "<img src=\"~a.~(~a~)\"/>~%" n ext)))))))))
+           #+nil
            (t (out "<p>@@@ ~a #x~x ~a</p>~%"
                    (RecordHeader.recType h)
                    (RecordHeader.recType h)
@@ -648,19 +706,33 @@
         (out "</div>~%"))
       (out "</body>~%</html>~%"))))
 
+(defun find-ole-entry (ole-file name)
+  (traverse-directories
+   ole-file
+   (lambda (entry id level)
+     (declare (ignore id level))
+     (let ((entry-name (ole-entry-name-to-string
+                        (ole-entry.name entry)
+                        (ole-entry.name-length entry))))
+       (when (equal name entry-name)
+         (return-from find-ole-entry entry))))))
+
 (defun ppt-file-to-html-naive (filename &optional (stream *standard-output*))
   (with-ole-file (ole-file filename)
-    (traverse-directories
-     ole-file
-     (lambda (entry id level)
-       (declare (ignore id level))
-       (case (ole-entry.object-type entry)
-         (2 ;; stream
-          (let ((entry-name (ole-entry-name-to-string
-                             (ole-entry.name entry)
-                             (ole-entry.name-length entry))))
-            (when (equal "PowerPoint Document" entry-name)
-              (ppt-entry-to-html-naive ole-file entry stream filename)))))))))
+    (let ((pictures nil))
+      (walk-RecordHeader-tree ole-file
+                              (find-ole-entry ole-file "Pictures")
+                              (lambda (in level i h start end)
+                                (declare (ignore level end))
+                                (multiple-value-bind (blip kind)
+                                    (read-record-body in h)
+                                  (declare (ignore blip))
+                                  (push (list i (- start 8) kind) pictures))))
+      (ppt-entry-to-html-naive ole-file
+                               (find-ole-entry ole-file "PowerPoint Document")
+                               stream
+                               filename
+                               pictures))))
 
 (define-structure UserEditAtom ()
   (lastSlideIdRef dword)
@@ -692,6 +764,8 @@
          (case (RecordHeader.recType h)
            (#.RT_Document
             (out "<div>~%"))
+           (#.RT_Slide
+            (out "<hr/>~%</div>~%<div class=\"slide\">~%<h1>Slide ~d</h1>~%" (incf slide-no)))
            ((#.RT_TextCharsAtom #.RT_CString) ;; utf16le
             (out "<p>")
             (loop
@@ -703,9 +777,7 @@
             (loop
                for j from 0 below (RecordHeader.recLen h)
                do (out "~a" (ascii-char (read-byte in))))
-            (out "</p>~%"))
-           (#.RT_Slide
-            (out "<hr/>~%</div>~%<div class=\"slide\">~%<h1>Slide ~d</h1>~%" (incf slide-no))))))
+            (out "</p>~%")))))
       (out "</div>~%</body>~%</html>~%"))))
 
 (defun process-PersistDirectoryAtom (htab in)
