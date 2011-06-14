@@ -349,7 +349,7 @@
                  entry
                  (lambda (in level i h start end)
                    (declare (ignore level start end))
-                   (multiple-value-bind (blib kind)
+                   (multiple-value-bind (blip kind)
                        (read-record-body
                         in
                         h
@@ -363,7 +363,7 @@
                                                :if-exists :supersede
                                                :element-type '(unsigned-byte 8))
                             (alexandria:copy-stream in out))))
-                     (declare (ignore blib))
+                     (declare (ignore blip))
                      (format html "<p><img src=\"_~d.~(~a~)\">~%" i kind)))))))))))))
 
 ;;; MS-PPT PowerPoint (.ppt) Binary File Format
