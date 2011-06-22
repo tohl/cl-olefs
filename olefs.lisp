@@ -347,8 +347,8 @@
                 (walk-RecordHeader-tree
                  ole-file
                  entry
-                 (lambda (in level i h start end)
-                   (declare (ignore level start end))
+                 (lambda (in level i h start end parents)
+                   (declare (ignore level start end parents))
                    (multiple-value-bind (blip kind)
                        (read-record-body
                         in
@@ -538,33 +538,37 @@
 (defun read-record (stream &optional fn)
   (read-record-body stream (read-RecordHeader stream) fn))
 
-(defun walk-RecordHeader-tree (ole-file entry fn)
-  (with-ole-entry-stream (in ole-file entry)
-    (labels ((rec (level pos)
-               (handler-case
-                   (loop
-                      for i from 0
-                      until (<= 1 pos (file-position in))
-                      do (let* ((h (read-RecordHeader in))
-                                (start (file-position in))
-                                (end (+ start (RecordHeader.recLen h))))
-                           (funcall fn in level i h start end)
-                           (if (= #xf (RecordHeader.recVer h))
-                               (rec (1+ level)
-                                    (if (plusp pos)
-                                        (min pos end)
-                                        end))
-                               (file-position in end))))
-                 (end-of-file ()
-                   (assert (zerop level))))))
-      (rec 0 0))))
+(defun walk-RecordHeader-tree (ole-file entry fn &optional post-fn)
+  (when entry
+    (with-ole-entry-stream (in ole-file entry)
+      (labels ((rec (level pos parents)
+                 (handler-case
+                     (loop
+                        for i from 0
+                        until (<= 1 pos (file-position in))
+                        do (let* ((h (read-RecordHeader in))
+                                  (start (file-position in))
+                                  (end (+ start (RecordHeader.recLen h))))
+                             (funcall fn in level i h start end parents)
+                             (if (= #xf (RecordHeader.recVer h))
+                                 (rec (1+ level)
+                                      (if (plusp pos)
+                                          (min pos end)
+                                          end)
+                                      (cons h parents))
+                                 (file-position in end))
+                             (when post-fn
+                               (funcall post-fn in level i h start end parents))))
+                   (end-of-file ()
+                     (assert (zerop level))))))
+        (rec 0 0 nil)))))
 
 (defun print-RecordHeader-tree (ole-file entry)
   (walk-RecordHeader-tree
    ole-file
    entry
-   (lambda (in level i h start end)
-     (declare (ignore in))
+   (lambda (in level i h start end parents)
+     (declare (ignore in parents))
      (dotimes (j (* 2 level))
        (write-char #\space))
      (format t "~d #x~x #x~x #x~x ~d :: ~d ~d :: ~a~%"
@@ -632,19 +636,29 @@
       (when title
         (out "<title>~a</title>~%" title))
       (out "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\"/>~%")
+      (out "<style>~%")
+      (out ".h {border-left:1px solid gray;padding-left:0.5em}~%")
+      (out ".m {color:gray}")
+      (out "</style>~%")
       (out "</head>~%<body>~%")
+      (when title
+        (out "<h1>~a</h1>~%" title))
       (walk-RecordHeader-tree
        ole-file
        entry
-       (lambda (in level i h start end)
-         (declare (ignore i level start end))
+       (lambda (in level i h start end parents)
+         (declare (ignore start end))
+         ;; pre
+         (when (and (zerop level) (plusp i))
+           (out "<hr/>~%"))
+         ;; msg
+         (out "<div class=\"h\">~%<pre class=\"m\">~a #x~x ~a</pre>~%"
+              (RecordHeader.recType h)
+              (RecordHeader.recType h)
+              (enum-by-value 'RecordType (RecordHeader.recType h)))
+         ;; post
          (case (RecordHeader.recType h)
-           (#.RT_Document
-            #+nil
-            (out "<div><p>@@@ ~a #x~x ~a</p>~%"
-                 (RecordHeader.recType h)
-                 (RecordHeader.recType h)
-                 (enum-by-value 'RecordType (RecordHeader.recType h))))
+           (#.RT_Document)
            (#.RT_OfficeArtFBSE
             (let* ((x (read-OfficeArtFBSE in))
                    (y (find (OfficeArtFBSE.foDelay x) pictures :key #'cadr)))
@@ -658,30 +672,34 @@
                    blip-no
                    (OfficeArtFBSE.foDelay x))))
            (#.RT_Slide
-            (out "<hr/>~%</div>~%")
             (incf slide-no)
             (out "<div class=\"slide\">~%<h1><a name=\"slide~d\">Slide ~d</a></h1>~%"
                  slide-no slide-no)
             (out "<pre><a href=\"#slide~d\">&lt;</a> <a href=\"#slide~d\">&gt;</a></pre>~%"
                  (1- slide-no) (1+ slide-no)))
            ((#.RT_TextCharsAtom #.RT_CString) ;; utf16le
-            (out "<p>")
-            (loop
-               for j from 0 below (RecordHeader.recLen h) by 2
-               do (out "~a" (utf-char (read-value 'ushort in))))
-            (out "</p>~%"))
+            (unless (or (member #.RT_PROGTAGS parents :key 'RecordHeader.recType)
+                        (member #.RT_NOTES parents :key 'RecordHeader.recType)
+                        (member #.RT_MAINMASTER parents :key 'RecordHeader.recType))
+              (out "<p>")
+              (loop
+                 for j from 0 below (RecordHeader.recLen h) by 2
+                 do (out "~a" (utf-char (read-value 'ushort in))))
+              (out "</p>~%")))
            (#.RT_TextBytesAtom ;; ascii
-            (out "<p>")
-            (loop
-               for j from 0 below (RecordHeader.recLen h)
-               do (out "~a" (ascii-char (read-byte in))))
-            (out "</p>~%"))
+            (unless (or (member #.RT_PROGTAGS parents :key 'RecordHeader.recType)
+                        (member #.RT_NOTES parents :key 'RecordHeader.recType)
+                        (member #.RT_MAINMASTER parents :key 'RecordHeader.recType))
+              (out "<p>")
+              (loop
+                 for j from 0 below (RecordHeader.recLen h)
+                 do (out "~a" (ascii-char (read-byte in))))
+              (out "</p>~%")))
+           (#.RT_OUTLINETEXTREFATOM
+            (let ((index (read-value 'dword in)))
+              (out "<p>TODO ~s</p>" index)))
+           ;; TODO RT_DOCUMENT / RT_SLIDELISTWITHTEXT / RT_TEXTBYTESATOM
            (#.RT_OfficeArtFOPT
-            #+nil
-            (out "<p>!!! ~a #x~x ~a</p>~%"
-                 (RecordHeader.recType h)
-                 (RecordHeader.recType h)
-                 (enum-by-value 'RecordType (RecordHeader.recType h)))
             (with-shorter-stream (s in (RecordHeader.recLen h))
               (let ((len (RecordHeader.recLen h)))
                 (loop
@@ -696,14 +714,13 @@
                            (assert (OfficeArtFOPTEOPID.fBid opid))
                            (destructuring-bind (j n ext) (assoc value blips)
                              (assert (and j n ext))
-                             (out "<img src=\"~a.~(~a~)\"/>~%" n ext)))))))))
-           #+nil
-           (t (out "<p>@@@ ~a #x~x ~a</p>~%"
-                   (RecordHeader.recType h)
-                   (RecordHeader.recType h)
-                   (enum-by-value 'RecordType (RecordHeader.recType h)))))))
-      (when (plusp slide-no)
-        (out "</div>~%"))
+                             (out "<img src=\"~a.~(~a~)\"/>~%" n ext)))))))))))
+       (lambda (in level i h start end parents)
+         (declare (ignore in level i start end parents))
+         (case (RecordHeader.recType h)
+           (#.RT_Slide
+            (out "</div>~%")))
+         (format stream "</div>~%")))
       (out "</body>~%</html>~%"))))
 
 (defun find-ole-entry (ole-file name)
@@ -722,8 +739,8 @@
     (let ((pictures nil))
       (walk-RecordHeader-tree ole-file
                               (find-ole-entry ole-file "Pictures")
-                              (lambda (in level i h start end)
-                                (declare (ignore level end))
+                              (lambda (in level i h start end parents)
+                                (declare (ignore level end parents))
                                 (multiple-value-bind (blip kind)
                                     (read-record-body in h)
                                   (declare (ignore blip))
@@ -759,8 +776,8 @@
       (walk-RecordHeader-tree
        ole-file
        entry
-       (lambda (in level i h start end)
-         (declare (ignore i level start end))
+       (lambda (in level i h start end parents)
+         (declare (ignore i level start end parents))
          (case (RecordHeader.recType h)
            (#.RT_Document
             (out "<div>~%"))
@@ -816,8 +833,8 @@
                          (walk-RecordHeader-tree
                           ole-file
                           entry
-                          (lambda (in level i h start end)
-                            (declare (ignore level i start end))
+                          (lambda (in level i h start end parents)
+                            (declare (ignore level i start end parents))
                             (return-from CurrentUser
                               (cadr (read-record-body in h))))))))))))))
       (describe u)
