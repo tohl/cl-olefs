@@ -320,51 +320,55 @@
     (make-instance 'ole-entry-stream :ole-file ,ole-file :ole-entry ,ole-entry)
     (lambda (,var) ,@body)))
 
-(defun extract-ole-file (filename &optional (dir "/tmp"))
+(defun extract-pictures (ole-file dir html)
+  (traverse-directories
+   ole-file
+   (lambda (entry id level)
+     (declare (ignore id level))
+     (case (ole-entry.object-type entry)
+       (2 ;; stream
+        (let ((entry-name (ole-entry-name-to-string
+                           (ole-entry.name entry)
+                           (ole-entry.name-length entry))))
+          (with-ole-entry-stream (in ole-file entry)
+            (with-open-file (out (format nil "~a/~a" dir entry-name)
+                                 :direction :output
+                                 :if-does-not-exist :create
+                                 :if-exists :supersede
+                                 :element-type '(unsigned-byte 8))
+              (alexandria:copy-stream in out)))
+          (when (equal "Pictures" entry-name)
+            (walk-RecordHeader-tree
+             ole-file
+             entry
+             (lambda (in level i h start end parents)
+               (declare (ignore level start end parents))
+               (multiple-value-bind (blip kind)
+                   (read-record-body
+                    in
+                    h
+                    (lambda (blip in)
+                      (with-open-file (out (format nil "~a/~d.~a"
+                                                   dir
+                                                   i
+                                                   (blip-ext blip))
+                                           :direction :output
+                                           :if-does-not-exist :create
+                                           :if-exists :supersede
+                                           :element-type '(unsigned-byte 8))
+                        (alexandria:copy-stream in out))))
+                 (declare (ignore blip))
+                 (when html
+                   (format html "<p><img src=\"_~d.~(~a~)\">~%" i kind))))))))))))
+
+(defun extract-ole-file (filename &optional (dir "/tmp")) ;; TODO extract audio files
   (with-ole-file (ole-file filename)
     (with-open-file (html (format nil "~a/index.html" dir)
                           :direction :output
                           :if-does-not-exist :create
                           :if-exists :supersede
                           :element-type 'character)
-      (traverse-directories
-       ole-file
-       (lambda (entry id level)
-         (declare (ignore id level))
-         (case (ole-entry.object-type entry)
-           (2 ;; stream
-            (let ((entry-name (ole-entry-name-to-string
-                               (ole-entry.name entry)
-                               (ole-entry.name-length entry))))
-              (with-ole-entry-stream (in ole-file entry)
-                (with-open-file (out (format nil "~a/~a" dir entry-name)
-                                     :direction :output
-                                     :if-does-not-exist :create
-                                     :if-exists :supersede
-                                     :element-type '(unsigned-byte 8))
-                  (alexandria:copy-stream in out)))
-              (when (equal "Pictures" entry-name)
-                (walk-RecordHeader-tree
-                 ole-file
-                 entry
-                 (lambda (in level i h start end parents)
-                   (declare (ignore level start end parents))
-                   (multiple-value-bind (blip kind)
-                       (read-record-body
-                        in
-                        h
-                        (lambda (blip in)
-                          (with-open-file (out (format nil "~a/~d.~a"
-                                                       dir
-                                                       i
-                                                       (blip-ext blip))
-                                               :direction :output
-                                               :if-does-not-exist :create
-                                               :if-exists :supersede
-                                               :element-type '(unsigned-byte 8))
-                            (alexandria:copy-stream in out))))
-                     (declare (ignore blip))
-                     (format html "<p><img src=\"_~d.~(~a~)\">~%" i kind)))))))))))))
+      (extract-pictures ole-file dir html))))
 
 ;;; MS-PPT PowerPoint (.ppt) Binary File Format
 
@@ -782,6 +786,7 @@
 (defun ppt-file-to-html-naive (filename &optional (stream *standard-output*))
   (with-ole-file (ole-file filename)
     (let ((pictures nil))
+      ;;(extract-pictures ole-file dir html) ;; TODO mount olefs and traverse Pictures only once
       (walk-RecordHeader-tree ole-file
                               (find-ole-entry ole-file "Pictures")
                               (lambda (in level i h start end parents)
