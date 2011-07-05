@@ -626,12 +626,16 @@
   #+nil(nameData (ubyte cbName))
   #+nil(embeddedBlip (ubyte size)))
 
-(defun ppt-entry-to-html-naive (ole-file entry stream title pictures)
+(defun ppt-entry-to-html-naive (ole-file entry stream title pictures debug)
   (macrolet ((out (&rest args)
                `(format stream ,@args)))
     (let ((slide-no 0)
           (blip-no 0)
-          (blips nil))
+          (blips nil)
+          ;; texts
+          (text-slide-no nil)
+          (text-no nil)
+          (texts nil))
       (out "<html>~%<head>~%")
       (when title
         (out "<title>~a</title>~%" title))
@@ -642,23 +646,30 @@
       (out "</style>~%")
       (out "</head>~%<body>~%")
       (when title
-        (out "<h1>~a</h1>~%" title))
+        (out "<a href=\"file://~a\">~a</a>~%" title title))
       (walk-RecordHeader-tree
        ole-file
        entry
        (lambda (in level i h start end parents)
          (declare (ignore start end))
-         ;; pre
-         (when (and (zerop level) (plusp i))
-           (out "<hr/>~%"))
-         ;; msg
-         (out "<div class=\"h\">~%<pre class=\"m\">~a #x~x ~a</pre>~%"
-              (RecordHeader.recType h)
-              (RecordHeader.recType h)
-              (enum-by-value 'RecordType (RecordHeader.recType h)))
+         (when debug
+           ;; pre
+           (when (and (zerop level) (plusp i))
+             (out "<hr/>~%"))
+           ;; msg
+           (when debug
+             (out "<div class=\"h\">~%<pre class=\"m\">~a #x~x ~a</pre>~%"
+                  (RecordHeader.recType h)
+                  (RecordHeader.recType h)
+                  (enum-by-value 'RecordType (RecordHeader.recType h)))))
          ;; post
          (case (RecordHeader.recType h)
            (#.RT_Document)
+           (#.RT_SlideListWithText
+            (setq text-slide-no 0))
+           (#.RT_SlidePersistAtom
+            (incf text-slide-no)
+            (setq text-no 0))
            (#.RT_OfficeArtFBSE
             (let* ((x (read-OfficeArtFBSE in))
                    (y (find (OfficeArtFBSE.foDelay x) pictures :key #'cadr)))
@@ -673,31 +684,63 @@
                    (OfficeArtFBSE.foDelay x))))
            (#.RT_Slide
             (incf slide-no)
-            (out "<div class=\"slide\">~%<h1><a name=\"slide~d\">Slide ~d</a></h1>~%"
-                 slide-no slide-no)
-            (out "<pre><a href=\"#slide~d\">&lt;</a> <a href=\"#slide~d\">&gt;</a></pre>~%"
-                 (1- slide-no) (1+ slide-no)))
+            (unless debug
+              (when (< 1 slide-no)
+                (out "<hr/>~%")))
+            (out "<div class=\"slide\">~%")
+            (out "<h1><a name=\"slide~d\">Slide ~d</a></h1>~%" slide-no slide-no)
+            (out "<pre><a href=\"#slide~d\">&lt;</a> <a href=\"#slide~d\">&gt;</a></pre>~%" (1- slide-no) (1+ slide-no)))
            ((#.RT_TextCharsAtom #.RT_CString) ;; utf16le
             (unless (or (member #.RT_PROGTAGS parents :key 'RecordHeader.recType)
                         (member #.RT_NOTES parents :key 'RecordHeader.recType)
                         (member #.RT_MAINMASTER parents :key 'RecordHeader.recType))
-              (out "<p>")
-              (loop
-                 for j from 0 below (RecordHeader.recLen h) by 2
-                 do (out "~a" (utf-char (read-value 'ushort in))))
-              (out "</p>~%")))
+              (cond
+                ((member #.RT_SlideListWithText parents :key 'RecordHeader.recType)
+                 (push ;; TODO also slide-no + text-no inside slide
+                  (list
+                   text-slide-no
+                   (incf text-no)
+                   (with-output-to-string (s)
+                     (loop
+                        for j from 0 below (RecordHeader.recLen h) by 2
+                        do (format s "~a" (utf-char (read-value 'ushort in))))))
+                  texts))
+                (t
+                 (out "<p>")
+                 (loop
+                    for j from 0 below (RecordHeader.recLen h) by 2
+                    do (out "~a" (utf-char (read-value 'ushort in))))
+                 (out "</p>~%")))))
            (#.RT_TextBytesAtom ;; ascii
             (unless (or (member #.RT_PROGTAGS parents :key 'RecordHeader.recType)
                         (member #.RT_NOTES parents :key 'RecordHeader.recType)
                         (member #.RT_MAINMASTER parents :key 'RecordHeader.recType))
-              (out "<p>")
-              (loop
-                 for j from 0 below (RecordHeader.recLen h)
-                 do (out "~a" (ascii-char (read-byte in))))
-              (out "</p>~%")))
+              (cond
+                ((member #.RT_SlideListWithText parents :key 'RecordHeader.recType)
+                 (push ;; TODO also slide-no + text-no inside slide
+                  (list
+                   text-slide-no
+                   (incf text-no)
+                   (with-output-to-string (s)
+                     (loop
+                        for j from 0 below (RecordHeader.recLen h)
+                        do (format s "~a" (ascii-char (read-byte in))))))
+                  texts))
+                (t
+                 (out "<p>")
+                 (loop
+                    for j from 0 below (RecordHeader.recLen h)
+                    do (out "~a" (ascii-char (read-byte in))))
+                 (out "</p>~%")))))
            (#.RT_OUTLINETEXTREFATOM
-            (let ((index (read-value 'dword in)))
-              (out "<p>TODO ~s</p>" index)))
+            (let* ((index (1+ (read-value 'dword in)))
+                   (text (caddr
+                          (find-if (lambda (x)
+                                     (and (= slide-no (car x))
+                                          (= index (cadr x))))
+                                   texts))))
+              (when text
+                (out "<p>~a</p>~%" text))))
            ;; TODO RT_DOCUMENT / RT_SLIDELISTWITHTEXT / RT_TEXTBYTESATOM
            (#.RT_OfficeArtFOPT
             (with-shorter-stream (s in (RecordHeader.recLen h))
@@ -720,7 +763,9 @@
          (case (RecordHeader.recType h)
            (#.RT_Slide
             (out "</div>~%")))
-         (format stream "</div>~%")))
+         (when debug
+           (format stream "</div>~%"))))
+      ;;(out "~s~%" texts)
       (out "</body>~%</html>~%"))))
 
 (defun find-ole-entry (ole-file name)
@@ -749,7 +794,8 @@
                                (find-ole-entry ole-file "PowerPoint Document")
                                stream
                                filename
-                               pictures))))
+                               pictures
+                               nil))))
 
 (define-structure UserEditAtom ()
   (lastSlideIdRef dword)
