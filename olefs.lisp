@@ -444,16 +444,14 @@
   (filter ubyte :always #xfe))
 
 (define-structure PersistDirectoryEntry ()
-  ;; (%dummy1 ubyte)
-  ;; (%dummy2 ubyte)
-  ;; (%dummy3 ubyte)
-  ;; (%dummy4 ubyte)
   (%dummy dword)
-  (persistId t :compute (ash %dummy -12))
-  (cPersist t :compute (logand #x0fff %dummy))
+  (persistId t :compute (logand #xfffff %dummy))
+  (cPersist t :compute (ash %dummy -20))
   (rgPersistOffset (dword cPersist)))
 
 (defstruct blip header ext guid guid2 metafileHeader)
+
+(defstruct PersistDirectoryAtom header entries)
 
 (defun read-record-body (stream RecordHeader &optional fn)
   (let ((x RecordHeader #+nil(read-RecordHeader stream)))
@@ -489,20 +487,20 @@
            (assert (zerop recInstance))
            (with-shorter-stream (in stream (RecordHeader.recLen x))
              (list x (read-UserEditAtom in))))
-          (#.RT_PersistDirectoryAtom ;; TODO
+          (#.RT_PersistDirectoryAtom
            (assert (zerop recVer))
            (assert (zerop recInstance))
-           (print (RecordHeader.recLen x))
-           (with-shorter-stream (in stream (RecordHeader.recLen x))
-             (list x
-                   (read-PersistDirectoryEntry in)
-                   #+nil
-                   (loop
-                      for fpos = 0 then (file-position in)
-                      while (< fpos (RecordHeader.recLen x))
-                      collect (progn
-                                (print fpos)
-                                (read-PersistDirectoryEntry in))))))
+           (let ((n (RecordHeader.recLen x)))
+             ;;(print n)
+             (with-shorter-stream (in stream n)
+               (make-PersistDirectoryAtom
+                :header x
+                :entries (loop
+                            for fpos = 0 then (file-position in)
+                            while (< fpos n)
+                            collect (progn
+                                      ;;(print fpos)
+                                      (read-PersistDirectoryEntry in)))))))
           #+nil
           (#.RT_Document ;; TODO
            )
@@ -849,24 +847,16 @@
       (out "</div>~%</body>~%</html>~%"))))
 
 (defun process-PersistDirectoryAtom (htab in)
-  (let ((d (cadr (read-record in))))
-    (with-slots (persistId cPersist rgPersistOffset) d
+  (dolist (entry (PersistDirectoryAtom-entries (read-record in)))
+    (with-slots (persistId cPersist rgPersistOffset) entry
       (loop
          for n from 0
          for o across rgPersistOffset
          do (let ((k (+ persistId n)))
-              (print (list k :-> o))
-              (setf (gethash k htab) o)))))
-  #+nil
-  (loop
-     for d = (cadr (read-record in)) ;;then (cadr (read-record in))
-     do (with-slots (persistId cPersist rgPersistOffset) d
-          (loop
-             for n from 0
-             for o across rgPersistOffset
-             do (let ((k (+ persistId n)))
-                  (print (list k :-> o))
-                  (setf (gethash k htab) o))))))
+              ;;(print (list :??? persistId :+ n := k :-> o))
+              (unless (gethash k htab)
+                ;;(print (list persistId :+ n := k :-> o))
+                (setf (gethash k htab) o)))))))
 
 (defun ppt-file-to-html (filename &optional (stream *standard-output*))
   (with-ole-file (ole-file filename)
@@ -888,27 +878,39 @@
                             (declare (ignore level i start end parents))
                             (return-from CurrentUser
                               (cadr (read-record-body in h))))))))))))))
-      (describe u)
-      (traverse-directories
-       ole-file
-       (lambda (entry id level)
-         (declare (ignore id level))
-         (case (ole-entry.object-type entry)
-           (2 ;; stream
-            (let ((entry-name (ole-entry-name-to-string
-                               (ole-entry.name entry)
-                               (ole-entry.name-length entry))))
-              (when (equal "PowerPoint Document" entry-name)
-                (with-ole-entry-stream (in ole-file entry)
-                  (let ((htab (make-hash-table))) ;; persist oid -> fpos
-                    (file-position in (CurrentUserAtom.offsetToCurrentEdit u))
-                    (loop
-                       for e = (cadr (read-record in)) then (cadr (read-record in))
-                       do (progn
-                            (describe e)
-                            (file-position in (UserEditAtom.offsetPersistDirectory e))
-                            (process-PersistDirectoryAtom htab in))
-                       until (zerop (UserEditAtom.offsetLastEdit e))
-                       do (file-position in (UserEditAtom.offsetLastEdit e))))
-                  #+nil(file-position in 0)
-                  #+nil(print (read-record in))))))))))))
+      ;;(describe u)
+      (let ((pictures nil))
+        ;;(extract-pictures ole-file dir html) ;; TODO mount olefs and traverse Pictures only once
+        (walk-RecordHeader-tree ole-file
+                                (find-ole-entry ole-file "Pictures")
+                                (lambda (in level i h start end parents)
+                                  (declare (ignore level end parents))
+                                  (multiple-value-bind (blip kind)
+                                      (read-record-body in h)
+                                    (declare (ignore blip))
+                                    (push (list i (- start 8) kind) pictures))))
+        (print (list :pictures pictures))
+        (with-ole-entry-stream (in ole-file
+                                   (find-ole-entry ole-file "PowerPoint Document"))
+          (let ((htab (make-hash-table)) ;; persist oid -> fpos
+                (first-UserEditAtom nil))
+            (file-position in (CurrentUserAtom.offsetToCurrentEdit u))
+            (loop
+               for e = (cadr (read-record in)) then (cadr (read-record in))
+               do (progn
+                    ;;(describe e)
+                    (unless first-UserEditAtom
+                      (setq first-UserEditAtom e))
+                    (file-position in (UserEditAtom.offsetPersistDirectory e))
+                    (process-PersistDirectoryAtom htab in))
+               until (zerop (UserEditAtom.offsetLastEdit e))
+               do (file-position in (UserEditAtom.offsetLastEdit e)))
+            ;; live PersistDirectory
+            (let ((persist-directory nil))
+              (maphash (lambda (k v) (push (cons k v) persist-directory)) htab)
+              (setq persist-directory (sort persist-directory #'< :key #'car))
+              (print persist-directory))
+            ;; live DocumentContainer
+            (print (gethash (UserEditAtom.docPersistIdRef first-UserEditAtom) htab)))
+          #+nil(file-position in 0)
+          #+nil(print (read-record in)))))))
