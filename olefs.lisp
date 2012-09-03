@@ -665,14 +665,15 @@
        ole-file
        entry
        (lambda (in level i h start end parents)
-         (declare (ignore start end))
+         (declare (ignore end))
          (when debug
            ;; pre
            (when (and (zerop level) (plusp i))
              (out "<hr/>~%"))
            ;; msg
            (when debug
-             (out "<div class=\"h\">~%<pre class=\"m\">~a #x~x ~a</pre>~%"
+             (out "<div class=\"h\">~%<pre class=\"m\">~a ~a #x~x ~a</pre>~%"
+                  (- start 8) ;; - record header size
                   (RecordHeader.recType h)
                   (RecordHeader.recType h)
                   (enum-by-value 'RecordType (RecordHeader.recType h)))))
@@ -705,10 +706,11 @@
             (out "<h1><a name=\"slide~d\">Slide ~d</a></h1>~%" slide-no slide-no)
             (out "<pre><a href=\"#slide~d\">&lt;</a> <a href=\"#slide~d\">&gt;</a></pre>~%" (1- slide-no) (1+ slide-no)))
            ((#.RT_TextCharsAtom #.RT_CString) ;; utf16le
-            (unless (or (member #.RT_PROGTAGS parents :key 'RecordHeader.recType)
+            (unless nil #+nil(or (member #.RT_PROGTAGS parents :key 'RecordHeader.recType)
                         (member #.RT_NOTES parents :key 'RecordHeader.recType)
                         (member #.RT_MAINMASTER parents :key 'RecordHeader.recType))
               (cond
+                #+nil
                 ((member #.RT_SlideListWithText parents :key 'RecordHeader.recType)
                  (push ;; TODO also slide-no + text-no inside slide
                   (list
@@ -726,10 +728,11 @@
                     do (out "~a" (utf-char (read-ushort in))))
                  (out "</p>~%")))))
            (#.RT_TextBytesAtom ;; ascii
-            (unless (or (member #.RT_PROGTAGS parents :key 'RecordHeader.recType)
+            (unless nil #+nil(or (member #.RT_PROGTAGS parents :key 'RecordHeader.recType)
                         (member #.RT_NOTES parents :key 'RecordHeader.recType)
                         (member #.RT_MAINMASTER parents :key 'RecordHeader.recType))
               (cond
+                #+nil
                 ((member #.RT_SlideListWithText parents :key 'RecordHeader.recType)
                  (push ;; TODO also slide-no + text-no inside slide
                   (list
@@ -753,8 +756,9 @@
                                      (and (= slide-no (car x))
                                           (= index (cadr x))))
                                    texts))))
-              (when text
-                (out "<p>~a</p>~%" text))))
+              (if text
+                  (out "<p>~a</p>~%" text)
+                  (out "<p>!!!</p>~%"))))
            ;; TODO RT_DOCUMENT / RT_SLIDELISTWITHTEXT / RT_TEXTBYTESATOM
            (#.RT_OfficeArtFOPT
             (with-shorter-stream (s in (RecordHeader.recLen h))
@@ -810,7 +814,7 @@
                                stream
                                filename
                                pictures
-                               nil))))
+                               t))))
 
 (define-structure UserEditAtom ()
   (lastSlideIdRef dword)
