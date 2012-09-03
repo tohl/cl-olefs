@@ -17,35 +17,47 @@
                                     :element-type '(unsigned-byte 8)
                                     :initial-element 0))
 
-(defun read-value (type stream)
-  (if (atom type)
-      (ecase type
-        (ubyte (read-byte stream))
-        (achar (read-byte stream))
-        (ushort (logior (read-byte stream)
-                        (ash (read-byte stream) 8)))
-        (wchar (logior (read-byte stream)
-                       (ash (read-byte stream) 8)))
-        (dword (logior (read-byte stream)
-                       (ash (read-byte stream) 8)
-                       (ash (read-byte stream) 16)
-                       (ash (read-byte stream) 24)))
-        (ulonglong (logior (read-byte stream)
-                           (ash (read-byte stream) 8)
-                           (ash (read-byte stream) 16)
-                           (ash (read-byte stream) 24)
-                           (ash (read-byte stream) 32)
-                           (ash (read-byte stream) 40)
-                           (ash (read-byte stream) 48)
-                           (ash (read-byte stream) 56)))
-        (filetime (read-value 'ulonglong stream))
-        (guid (read-value '(ubyte 16) stream)))
-      (destructuring-bind (element-type size) type
-        (let ((x (make-array size
-                             :element-type element-type
-                             :initial-element 0)))
-          (dotimes (i size x)
-            (setf (aref x i) (read-value element-type stream)))))))
+(defun read-ushort (stream)
+  (logior (read-byte stream)
+          (ash (read-byte stream) 8)))
+
+(defun read-dword (stream)
+  (logior (read-byte stream)
+          (ash (read-byte stream) 8)
+          (ash (read-byte stream) 16)
+          (ash (read-byte stream) 24)))
+
+(defun read-ulonglong (stream)
+  (logior (read-byte stream)
+          (ash (read-byte stream) 8)
+          (ash (read-byte stream) 16)
+          (ash (read-byte stream) 24)
+          (ash (read-byte stream) 32)
+          (ash (read-byte stream) 40)
+          (ash (read-byte stream) 48)
+          (ash (read-byte stream) 56)))
+
+(defun read-achar (stream)
+  (read-byte stream))
+
+(defun read-wchar (stream)
+  (read-ushort stream))
+
+(defun read-filetime (stream)
+  (read-ulonglong stream))
+
+(defun read-byte-vector (stream n)
+  (let ((x (make-array n :element-type '(unsigned-byte 8) :initial-element 0)))
+    (read-sequence x stream)
+    x))
+
+(defun read-guid (stream)
+  (read-byte-vector stream 16))
+
+(defun read-vector (stream n element-type reader)
+  (let ((x (make-array n :element-type element-type :initial-element 0)))
+    (dotimes (i n x)
+      (setf (aref x i) (funcall reader stream)))))
 
 (define-structure ole-header ()
   (signature (ubyte 8))
@@ -136,26 +148,26 @@
                (cons x (rec (aref fat x))))))
     (rec location)))
 
-(defun read-values (array type stream &optional (start 0) end)
+(defun read-values (array reader stream &optional (start 0) end)
   (loop
      for i from start below (or end (length array))
-     do (setf (aref array i) (read-value type stream))))
+     do (setf (aref array i) (funcall reader stream))))
 
 (defun read-difat (header stream)
   (let ((x (make-array (+ 109
                           (* #.(/ (- 512 4) 4)
                              (ole-header.number-of-difat-sectors header)))
                        :element-type 'dword)))
-    (read-values x 'dword stream 0 109)
+    (read-values x 'read-dword stream 0 109)
     (loop
        with m = #.(1- (/ 512 4))
        for n = (ole-header.first-difat-sector-location header)
-       then (read-value 'dword stream)
+       then (read-dword stream)
        for i = 109 then (+ m i)
        until (= +endofchain+ n)
        do (progn
             (seek-sector n stream)
-            (read-values x 'dword stream i (+ m i))))
+            (read-values x 'read-dword stream i (+ m i))))
     x))
 
 (defun read-fat (difat stream)
@@ -166,7 +178,7 @@
       (let ((s (aref difat i)))
         (unless (= +freesect+ s)
           (seek-sector s stream)
-          (read-values x 'dword stream (* m i) (* m (1+ i))))))))
+          (read-values x 'read-dword stream (* m i) (* m (1+ i))))))))
 
 (defun read-directories (chain stream)
   (let* ((m #.(/ 512 128))
@@ -185,9 +197,9 @@
          (i -1))
     (dolist (s chain x)
       (seek-sector s stream)
-      ;;TODO block read (read-values x 'dword stream (* m i) (* m (1+ i)))
+      ;;TODO block read (read-values x 'read-dword stream (* m i) (* m (1+ i)))
       (dotimes (j m)
-        (setf (aref x (incf i)) (read-value 'dword stream))))))
+        (setf (aref x (incf i)) (read-dword stream))))))
 
 (defun traverse-directories (ole-file callback)
   (let ((d (ole-file.directories ole-file)))
@@ -463,12 +475,12 @@
                         (y (make-blip
                             :header x
                             :ext ext
-                            :guid (read-value 'guid in)
+                            :guid (read-guid in)
                             :guid2 (when (member recInstance guid2)
-                                     (read-value 'guid in))
+                                     (read-guid in))
                             :metafileHeader (if metafileHeader
-                                                (read-value 'OfficeArtMetafileHeader in)
-                                                (read-value 'ubyte in)))))
+                                                (read-OfficeArtMetafileHeader in)
+                                                (read-byte in)))))
                    (when fn
                      (funcall fn y in))
                    (unless (eql end (file-position stream))
@@ -705,13 +717,13 @@
                    (with-output-to-string (s)
                      (loop
                         for j from 0 below (RecordHeader.recLen h) by 2
-                        do (format s "~a" (utf-char (read-value 'ushort in))))))
+                        do (format s "~a" (utf-char (read-ushort in))))))
                   texts))
                 (t
                  (out "<p>")
                  (loop
                     for j from 0 below (RecordHeader.recLen h) by 2
-                    do (out "~a" (utf-char (read-value 'ushort in))))
+                    do (out "~a" (utf-char (read-ushort in))))
                  (out "</p>~%")))))
            (#.RT_TextBytesAtom ;; ascii
             (unless (or (member #.RT_PROGTAGS parents :key 'RecordHeader.recType)
@@ -735,7 +747,7 @@
                     do (out "~a" (ascii-char (read-byte in))))
                  (out "</p>~%")))))
            (#.RT_OUTLINETEXTREFATOM
-            (let* ((index (1+ (read-value 'dword in)))
+            (let* ((index (1+ (read-dword in)))
                    (text (caddr
                           (find-if (lambda (x)
                                      (and (= slide-no (car x))
@@ -750,7 +762,7 @@
                 (loop
                    while (< (file-position s) len)
                    do (let ((opid (read-OfficeArtFOPTEOPID s))
-                            (value (read-value 'dword s)))
+                            (value (read-dword s)))
                         ;;(out "<p>...... ~s ~s</p>~%" opid value)
                         (when (OfficeArtFOPTEOPID.fComplex opid)
                           (decf len value))
@@ -836,7 +848,7 @@
             (out "<p>")
             (loop
                for j from 0 below (RecordHeader.recLen h) by 2
-               do (out "~a" (utf-char (read-value 'ushort in))))
+               do (out "~a" (utf-char (read-ushort in))))
             (out "</p>~%"))
            (#.RT_TextBytesAtom ;; ascii
             (out "<p>")

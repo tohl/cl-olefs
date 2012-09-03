@@ -15,13 +15,19 @@
       (destructuring-bind (type1 size) type
         (list 'vector type1 (if (numberp size) size '*)))))
 
-(defun slot-type-definition-for-reader (type)
-  (if (atom type)
-      `(',type)
-      (destructuring-bind (type1 size) type
-        (if (numberp size)
-            `('(,type1 ,size))
-            `((list ',type1 ,size))))))
+(defun slot-type-read (type)
+  (cond
+    ((eq 'ubyte type)
+     `(read-byte stream))
+    ((atom type)
+     `(,(intern (format nil "READ-~a" type)) stream))
+    ((eq 'ubyte (car type))
+     `(read-byte-vector stream ,(cadr type)))
+    (t
+     `(read-vector stream ,(cadr type) ',(car type)
+                   ',(intern (format nil "READ-~a" (car type)))))))
+
+;;(slot-type-read #+nil 'dword #+nil '(byte 6) '(wchar 6))
 
 (defun slot-reader-let-definition (name type &key compute always member)
   (list
@@ -29,7 +35,7 @@
    (flet ((value ()
             (cond
               (compute compute)
-              (t `(read-value ,@(slot-type-definition-for-reader type) stream)))))
+              (t (slot-type-read type)))))
      (cond
        (always `(let ((x ,(value))) (assert (equal x ,always)) x))
        (member `(let ((x ,(value))) (assert (member x ,member)) x))
