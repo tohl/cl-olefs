@@ -331,7 +331,9 @@
   (values (%read-byte stream nil)))
 
 (defun physical-stream-position (stream)
-  (nth-value 1 (%read-byte stream nil)))
+  (typecase stream
+    (ole-entry-stream (nth-value 1 (%read-byte stream nil)))
+    (t (file-position stream))))
 
 (defun %read-byte (stream consumep)
   ;; => :eof
@@ -968,3 +970,532 @@
             (print (gethash (UserEditAtom.docPersistIdRef first-UserEditAtom) htab)))
           #+nil(file-position in 0)
           #+nil(print (read-record in)))))))
+
+;;; MS-DOC Word (.doc) Binary File Format
+
+(defclass vector-stream (trivial-gray-streams:fundamental-binary-input-stream
+                         trivial-gray-streams:trivial-gray-stream-mixin)
+  ((wrap :initarg :wrap)
+   (offset :initform 0)))
+
+(defmethod trivial-gray-streams::stream-element-type ((stream vector-stream))
+  '(unsigned-byte 8))
+
+(defmethod trivial-gray-streams:stream-file-position ((stream vector-stream))
+  (with-slots (offset) stream
+    offset))
+
+(defmethod trivial-gray-streams:stream-read-byte ((stream vector-stream))
+  (with-slots (wrap offset) stream
+    (cond
+      ((< offset (length wrap))
+       (prog1 (aref wrap offset)
+         (incf offset)))
+      (t :eof))))
+
+(defun call-with-vector-stream (stream fn)
+  (with-open-stream (x stream)
+    (funcall fn x)))
+
+(defmacro with-vector-stream ((var wrap) &body body)
+  `(call-with-vector-stream
+    (make-instance 'vector-stream :wrap ,wrap)
+    (lambda (,var) ,@body)))
+
+(define-structure FibBase ()
+  (wIdent ushort)
+  (nFib ushort)
+  (unused ushort)
+  (lid ushort)
+  (pnNext ushort)
+  (flags1 ushort) ;; TODO
+  (nFibBack ushort :member '(#xbf #xc1))
+  (lKey dword)
+  (envr ubyte)       ;; TODO :always 0?
+  (flags2 ubyte)     ;; TODO
+  (reserved3 ushort) ;; TODO :always 0?
+  (reserved4 ushort) ;; TODO :always 0?
+  (reserved5 dword)
+  (reserved6 dword))
+
+(define-structure FibRgFcLcb97 ()
+  (fcStshfOrig dword)
+  (lcbStshfOrig dword)
+  (fcStshf dword)
+  (lcbStshf dword)
+  (fcPlcffndRef dword)
+  (lcbPlcffndRef dword)
+  (fcPlcffndTxt dword)
+  (lcbPlcffndTxt dword)
+  (fcPlcfandRef dword)
+  (lcbPlcfandRef dword)
+  (fcPlcfandTxt dword)
+  (lcbPlcfandTxt dword)
+  (fcPlcfSed dword)
+  (lcbPlcfSed dword)
+  (fcPlcPad dword)
+  (lcbPlcPad dword)
+  (fcPlcfPhe dword)
+  (lcbPlcfPhe dword)
+  (fcSttbfGlsy dword)
+  (lcbSttbfGlsy dword)
+  (fcPlcfGlsy dword)
+  (lcbPlcfGlsy dword)
+  (fcPlcfHdd dword)
+  (lcbPlcfHdd dword)
+  (fcPlcfBteChpx dword)
+  (lcbPlcfBteChpx dword)
+  (fcPlcfBtePapx dword)
+  (lcbPlcfBtePapx dword)
+  (fcPlcfSea dword)
+  (lcbPlcfSea dword)
+  (fcSttbfFfn dword)
+  (lcbSttbfFfn dword)
+  (fcPlcfFldMom dword)
+  (lcbPlcfFldMom dword)
+  (fcPlcfFldHdr dword)
+  (lcbPlcfFldHdr dword)
+  (fcPlcfFldFtn dword)
+  (lcbPlcfFldFtn dword)
+  (fcPlcfFldAtn dword)
+  (lcbPlcfFldAtn dword)
+  (fcPlcfFldMcr dword)
+  (lcbPlcfFldMcr dword)
+  (fcSttbfBkmk dword)
+  (lcbSttbfBkmk dword)
+  (fcPlcfBkf dword)
+  (lcbPlcfBkf dword)
+  (fcPlcfBkl dword)
+  (lcbPlcfBkl dword)
+  (fcCmds dword)
+  (lcbCmds dword)
+  (fcUnused1 dword)
+  (lcbUnused1 dword)
+  (fcSttbfMcr dword)
+  (lcbSttbfMcr dword)
+  (fcPrDrvr dword)
+  (lcbPrDrvr dword)
+  (fcPrEnvPort dword)
+  (lcbPrEnvPort dword)
+  (fcPrEnvLand dword)
+  (lcbPrEnvLand dword)
+  (fcWss dword)
+  (lcbWss dword)
+  (fcDop dword)
+  (lcbDop dword)
+  (fcSttbfAssoc dword)
+  (lcbSttbfAssoc dword)
+  (fcClx dword)
+  (lcbClx dword)
+  (fcPlcfPgdFtn dword)
+  (lcbPlcfPgdFtn dword)
+  (fcAutosaveSource dword)
+  (lcbAutosaveSource dword)
+  (fcGrpXstAtnOwners dword)
+  (lcbGrpXstAtnOwners dword)
+  (fcSttbfAtnBkmk dword)
+  (lcbSttbfAtnBkmk dword)
+  (fcUnused2 dword)
+  (lcbUnused2 dword)
+  (fcUnused3 dword)
+  (lcbUnused3 dword)
+  (fcPlcSpaMom dword)
+  (lcbPlcSpaMom dword)
+  (fcPlcSpaHdr dword)
+  (lcbPlcSpaHdr dword)
+  (fcPlcfAtnBkf dword)
+  (lcbPlcfAtnBkf dword)
+  (fcPlcfAtnBkl dword)
+  (lcbPlcfAtnBkl dword)
+  (fcPms dword)
+  (lcbPms dword)
+  (fcFormFldSttbs dword)
+  (lcbFormFldSttbs dword)
+  (fcPlcfendRef dword)
+  (lcbPlcfendRef dword)
+  (fcPlcfendTxt dword)
+  (lcbPlcfendTxt dword)
+  (fcPlcfFldEdn dword)
+  (lcbPlcfFldEdn dword)
+  (fcUnused4 dword)
+  (lcbUnused4 dword)
+  (fcDggInfo dword)
+  (lcbDggInfo dword)
+  (fcSttbfRMark dword)
+  (lcbSttbfRMark dword)
+  (fcSttbfCaption dword)
+  (lcbSttbfCaption dword)
+  (fcSttbfAutoCaption dword)
+  (lcbSttbfAutoCaption dword)
+  (fcPlcfWkb dword)
+  (lcbPlcfWkb dword)
+  (fcPlcfSpl dword)
+  (lcbPlcfSpl dword)
+  (fcPlcftxbxTxt dword)
+  (lcbPlcftxbxTxt dword)
+  (fcPlcfFldTxbx dword)
+  (lcbPlcfFldTxbx dword)
+  (fcPlcfHdrtxbxTxt dword)
+  (lcbPlcfHdrtxbxTxt dword)
+  (fcPlcffldHdrTxbx dword)
+  (lcbPlcffldHdrTxbx dword)
+  (fcStwUser dword)
+  (lcbStwUser dword)
+  (fcSttbTtmbd dword)
+  (lcbSttbTtmbd dword)
+  (fcCookieData dword)
+  (lcbCookieData dword)
+  (fcPgdMotherOldOld dword)
+  (lcbPgdMotherOldOld dword)
+  (fcBkdMotherOldOld dword)
+  (lcbBkdMotherOldOld dword)
+  (fcPgdFtnOldOld dword)
+  (lcbPgdFtnOldOld dword)
+  (fcBkdFtnOldOld dword)
+  (lcbBkdFtnOldOld dword)
+  (fcPgdEdnOldOld dword)
+  (lcbPgdEdnOldOld dword)
+  (fcBkdEdnOldOld dword)
+  (lcbBkdEdnOldOld dword)
+  (fcSttbfIntlFld dword)
+  (lcbSttbfIntlFld dword)
+  (fcRouteSlip dword)
+  (lcbRouteSlip dword)
+  (fcSttbSavedBy dword)
+  (lcbSttbSavedBy dword)
+  (fcSttbFnm dword)
+  (lcbSttbFnm dword)
+  (fcPlfLst dword)
+  (lcbPlfLst dword)
+  (fcPlfLfo dword)
+  (lcbPlfLfo dword)
+  (fcPlcfTxbxBkd dword)
+  (lcbPlcfTxbxBkd dword)
+  (fcPlcfTxbxHdrBkd dword)
+  (lcbPlcfTxbxHdrBkd dword)
+  (fcDocUndoWord9 dword)
+  (lcbDocUndoWord9 dword)
+  (fcRgbUse dword)
+  (lcbRgbUse dword)
+  (fcUsp dword)
+  (lcbUsp dword)
+  (fcUskf dword)
+  (lcbUskf dword)
+  (fcPlcupcRgbUse dword)
+  (lcbPlcupcRgbUse dword)
+  (fcPlcupcUsp dword)
+  (lcbPlcupcUsp dword)
+  (fcSttbGlsyStyle dword)
+  (lcbSttbGlsyStyle dword)
+  (fcPlgosl dword)
+  (lcbPlgosl dword)
+  (fcPlcocx dword)
+  (lcbPlcocx dword)
+  (fcPlcfBteLvc dword)
+  (lcbPlcfBteLvc dword)
+  (dwLowDateTime dword)
+  (dwHighDateTime dword)
+  (fcPlcfLvcPre10 dword)
+  (lcbPlcfLvcPre10 dword)
+  (fcPlcfAsumy dword)
+  (lcbPlcfAsumy dword)
+  (fcPlcfGram dword)
+  (lcbPlcfGram dword)
+  (fcSttbListNames dword)
+  (lcbSttbListNames dword)
+  (fcSttbfUssr dword)
+  (lcbSttbfUssr dword))
+
+#+nil
+(define-structure FibRgCswNew ()
+  (nFibNew ushort :member '(#x00D9 #x0101 #x010C #x0112))
+  rgCswNewData (variable): Depending on the value of nFibNew this is one of the following.
+  Value of nFibNew
+  Meaning
+  0x00D9
+  fibRgCswNewData2000 (2 bytes)
+  0x0101
+  fibRgCswNewData2000 (2 bytes)
+  0x010C
+  fibRgCswNewData2000 (2 bytes)
+  0x0112
+  fibRgCswNewData2007 (8 bytes) )
+
+(defstruct fib base csw fibRgW cslw fibRgLw cbRgFcLcb fibRgFcLcbBlob fibRgFcLcb
+           cswNew fibRgCswNew)
+
+(defun read-fib (stream)
+  (let* ((base (read-fibbase stream))
+         (csw (let ((x (read-ushort stream)))
+                (assert (= x #x0e))
+                x))
+         (fibRgW (read-vector stream 28 '(unsigned-byte 8) 'read-byte))
+         (cslw (let ((x (read-ushort stream)))
+                 (assert (= x #x16))
+                 x))
+         (fibRgLw (read-vector stream 88 '(unsigned-byte 8) 'read-byte))
+         (cbRgFcLcb (read-ushort stream))
+         (fibRgFcLcbBlob (read-vector stream (* 8 cbRgFcLcb) '(unsigned-byte 8) 'read-byte))
+         (cswNew (read-ushort stream))
+         (fibRgCswNew (read-vector stream cswNew '(unsigned-byte 8) 'read-byte))
+         (nFib (if (zerop cswNew)
+                   (FibBase.nFib base)
+                   -1 #+nil(assert (zerop cswNew))))) ;; TODO implement this case
+    (assert
+     (member cbRgFcLcb '(#x5d #x6c #x88 #xa4 #xb7))
+     #+nil ;; spec says as bellow:-{
+     (= cbRgFcLcb (ecase nFib
+                    (#x0c1 #x5d) ;;;; < should be
+                    (#x0d9 #x6c)
+                    (#x101 #x88)
+                    (#x10c #xa4) ;;;; < actually is
+                    (#x112 #xb7))))
+    #+nil
+    (assert (= cswNew (ecase nFib
+                        (#x0c1 0)
+                        (#x0d9 2)
+                        (#x101 2)
+                        (#x10c 2)
+                        (#x112 5))))
+    ;;(print (list :@@@-nfib nFib))
+    (make-fib :base base
+              :csw csw
+              :fibRgW fibRgW
+              :cslw cslw
+              :fibRgLw fibRgLw
+              :cbRgFcLcb cbRgFcLcb
+              :fibRgFcLcbBlob fibRgFcLcbBlob
+              :fibRgFcLcb (with-vector-stream (s fibRgFcLcbBlob)
+                            (read-FibRgFcLcb97 s))
+              :cswNew cswNew
+              :fibRgCswNew fibRgCswNew)))
+
+(define-structure LSTF ()
+  (lsid dword) ;; TODO signed, not -1 (or #xffffffff)
+  (tplc dword)
+  (rgistdPara (ushort 9))
+  (flags ubyte)
+  (fSimpleList t :compute (not (zerop (logand #x01 flags))))
+  (unused1 t :compute (not (zerop (logand #x02 flags))))
+  (fAutoNum t :compute (not (zerop (logand #x04 flags))))
+  (unused2 t :compute (not (zerop (logand #x08 flags))))
+  (fHybrid t :compute (not (zerop (logand #x10 flags))))
+  (reserved1 t :compute (logand #xe0 flags)) ;; TODO :always 0
+  (grfhic ubyte))
+
+(defun read-PlfLst (stream)
+  (let* ((cLst (read-ushort stream))
+         (z (make-array cLst)))
+    (dotimes (i cLst z)
+      (setf (aref z i) (read-lstf stream)))))
+
+(define-structure LVLF ()
+  (iStartAt dword) ;; TODO signed
+  (nfc ubyte) ;; TODO MUST not be equal to 0x08, 0x09, 0x0F, or 0x13
+  (flags ubyte)
+  (jc t :compute (logand #x03 flags))
+  (fLegal t :compute (not (zerop (logand #x04 flags))))
+  (fNoRestart t :compute (not (zerop (logand #x08 flags))))
+  (fIndentSav t :compute (not (zerop (logand #x10 flags))))
+  (fConverted t :compute (not (zerop (logand #x20 flags))))
+  (unused1 t :compute (not (zerop (logand #x40 flags))))
+  (fTentative t :compute (not (zerop (logand #x80 flags))))
+  (rgbxchNums (ubyte 9))
+  (ixchFollow ubyte)
+  (dxaIndentSav dword) ;; TODO signed
+  (unused2 dword)
+  (cbGrpprlChpx ubyte)
+  (cbGrpprlPapx ubyte)
+  (ilvlRestartLim ubyte)
+  (grfhic ubyte))
+
+(defstruct LVL lvlf grpprlPapx grpprlChpx xst)
+
+(define-structure Sprm ()
+  (flags ushort)
+  (ispmd t :compute (logand #x01ff flags))
+  (fSpec t :compute (not (zerop (logand #x0200 flags))))
+  (sgc t :compute (logand #x07 (ash flags -10)))
+  (spra t :compute (logand #x07 (ash flags -13))))
+
+(defstruct PChgTabsDelClose cTabs rgdxaDel rgdxaClose)
+
+(defun read-PChgTabsDelClose (stream)
+  (let ((cTabs (read-byte stream)))
+    (assert (<= 0 cTabs 64))
+    (let ((rgdxaDel (read-vector stream cTabs t 'read-ushort))
+          (rgdxaClose (read-vector stream cTabs t 'read-ushort)))
+      (assert (equalp rgdxaDel (sort (copy-seq rgdxaDel) #'<=)))
+      (make-PChgTabsDelClose :cTabs cTabs
+                             :rgdxaDel rgdxaDel
+                             :rgdxaClose rgdxaClose))))
+
+(defstruct PChgTabsAdd cTabs rgdxaAdd rgtbdAdd)
+
+(defun read-PChgTabsAdd (stream)
+  (let ((cTabs (read-byte stream)))
+    (assert (<= 0 cTabs 64))
+    (let ((rgdxaAdd (read-vector stream cTabs t 'read-ushort))
+          (rgtbdAdd (read-vector stream cTabs t 'read-byte))) ;; TODO decode TBD struct
+      (assert (equalp rgdxaAdd (sort (copy-seq rgdxaAdd) #'<=)))
+      (make-PChgTabsAdd :cTabs cTabs
+                        :rgdxaAdd rgdxaAdd
+                        :rgtbdAdd rgtbdAdd))))
+
+(defstruct PChgTabsOperand cb DelClose Add)
+
+(defun read-PChgTabsOperand (stream)
+  (let ((cb (read-byte stream)))
+    (assert (< 1 cb 255)) ;; TODO 255
+    ;;(read-vector stream cb t 'read-byte)
+    (make-PChgTabsOperand :cb cb
+                          :DelClose (read-PChgTabsDelClose stream)
+                          :Add (read-PChgTabsAdd stream))))
+
+(defstruct Prl sprm operand)
+
+(defun read-Prl (stream)
+  (let ((sprm (read-Sprm stream)))
+    ;; (when (zerop (Sprm.sgc sprm))
+    ;;   (print (list :@@@-!!! (read-vector stream 10 t 'read-byte))))
+    (assert (member (Sprm.sgc sprm) '(1 2 3 4 5)))
+    (make-Prl
+     :sprm sprm
+     :operand (ecase (Sprm.spra sprm)
+                (0 (read-byte stream))
+                (1 (read-byte stream))
+                (2 (read-ushort stream))
+                (3 (read-dword stream))
+                (4 (read-ushort stream))
+                (5 (read-ushort stream))
+                (6 (flet ((rd ()
+                            (read-vector stream (read-byte stream) t 'read-byte)))
+                     (ecase (Sprm.sgc sprm)
+                       (1 (ecase (Sprm.flags sprm) ;; par
+                            (#xc615 (read-PChgTabsOperand stream))))
+                       (2 (rd))     ;; char
+                       (3 (rd))     ;; pic
+                       (4 (rd))     ;; sec
+                       #+nil(5 )))) ;; tab
+                (7 (read-vector stream 3 t 'read-byte))))))
+
+;;(defstruct Xst blob parsed)
+
+(defun read-Xst (stream)
+  ;;(read-vector stream (read-ushort stream) t 'read-ushort)
+  (let* ((cch (read-ushort stream))
+         (blob (read-vector stream cch t 'read-ushort)))
+    (make-Xst :blob blob
+              :parsed nil
+              #+nil(with-output-to-string (out)
+                     (dotimes (i cch)
+                       (format out "~a" (utf-char (aref blob i))))))))
+
+(defun read-LVL (stream)
+  (let ((lvlf (read-lvlf stream)))
+    ;;(describe lvlf)
+    (make-LVL
+     :lvlf lvlf
+     :grpprlPapx (read-vector stream (LVLF.cbGrpprlPapx lvlf) t 'read-byte)
+     :grpprlChpx (read-vector stream (LVLF.cbGrpprlChpx lvlf) t 'read-byte)
+     ;; :grpprlPapx (read-vector stream (LVLF.cbGrpprlPapx lvlf) t 'read-prl)
+     ;; :grpprlChpx (read-vector stream (LVLF.cbGrpprlChpx lvlf) t 'read-prl)
+     :xst (read-Xst stream))))
+
+(defun fix-numbering (filename)
+  (let (offsets)
+    (with-ole-file (ole-file filename)
+      #+nil(break "~s" ole-file)
+      (let (fcPlfLst lcbPlfLst)
+        (block found1
+          (traverse-directories
+           ole-file
+           (lambda (entry id level)
+             (declare (ignore id level))
+             (case (ole-entry.object-type entry)
+               (2 ;; stream
+                (let ((entry-name (ole-entry-name-to-string
+                                   (ole-entry.name entry)
+                                   (ole-entry.name-length entry))))
+                  (when (equal "WordDocument" entry-name)
+                    (with-ole-entry-stream (in ole-file entry)
+                      (let ((fib (read-fib in)))
+                        ;;(describe fib)
+                        (let ((x (fib-fibRgFcLcb fib)))
+                          (setq fcPlfLst (FibRgFcLcb97.fcPlfLst x)
+                                lcbPlfLst (FibRgFcLcb97.lcbPlfLst x)))
+                        (return-from found1)
+                        #+nil
+                        (multiple-value-bind (fcPlfLst lcbPlfLst)
+                            (with-vector-stream (s (subseq (fib-fibRgFcLcbBlob fib) #.(* 4 146)))
+                              (values (read-dword s) (read-dword s)))
+                          (print (list :@@@ fcPlfLst lcbPlfLst))
+                          ))))))))))
+        (block found2
+          (traverse-directories
+           ole-file
+           (lambda (entry id level)
+             (declare (ignore id level))
+             (case (ole-entry.object-type entry)
+               (2 ;; stream
+                (let ((entry-name (ole-entry-name-to-string
+                                   (ole-entry.name entry)
+                                   (ole-entry.name-length entry))))
+                  (when (or (equal "0Table" entry-name) ;; TODO be sure which one?
+                            (equal "1Table" entry-name))
+                    (with-ole-entry-stream (in ole-file entry)
+                      (file-position in fcPlfLst)
+                      (let ((PlfLst (read-PlfLst in)))
+                        (let ((n 0))
+                          (dotimes (i (length PlfLst))
+                            (incf n (if (LSTF.fSimpleList (aref PlfLst i)) 1 9)))
+                          (let ((lvls (make-array n)))
+                            (dotimes (i n)
+                              (setf (aref lvls i) (read-lvl in)))
+                            ;; now I have lstf[] and lvl[]
+                            (let (anums ;; roughly like w:abstractNum
+                                  (j 0))
+                              (dotimes (i (length PlfLst))
+                                (let ((lstf (aref PlfLst i)))
+                                  (unless (LSTF.fSimpleList lstf)
+                                    (push (list i #+nil lstf j) anums))
+                                  (incf j (if (LSTF.fSimpleList lstf) 1 9))))
+                              (setq anums (nreverse anums))
+                              ;;(print anums)
+                              (dolist (a anums)
+                                (destructuring-bind (i j) a ;; i_lstf j_lvl0
+                                  (declare (ignore i))
+                                  (let* ((lvl (aref lvls (1+ j))) ;; hardcode second level
+                                         (lvlf (LVL-lvlf lvl)))
+                                    ;;(print (list :@@@ j (LVLF.fNoRestart lvlf) (LVLF.ilvlRestartLim lvlf)))
+                                    (push (LVLF.%physical-stream-position lvlf) offsets)))))
+                            #+nil
+                            (dotimes (i n)
+                              (let* ((lvl (aref lvls i))
+                                     (lvlf (LVL-lvlf lvl)))
+                                (print (list :@@@ i (LVLF.fNoRestart lvlf) (LVLF.ilvlRestartLim lvlf)))))))))
+                    (return-from found2))))))))
+        #+nil(values fcPlfLst lcbPlfLst)))
+    (let ((fixed (format nil "~a.fixed.doc" filename)))
+      (alexandria:copy-file filename fixed)
+      ;;(print (list :@@@-offsets offsets))
+      (with-open-file (s fixed
+                         :direction :io
+                         :if-exists :overwrite
+                         :if-does-not-exist :error
+                         :element-type '(unsigned-byte 8))
+        (dolist (o offsets)
+          (file-position s (+ 5 o))
+          (let ((flags (read-byte s)))
+            (file-position s (+ 5 o))
+            (write-byte (logior #x08 flags) s)
+            #+nil(write-byte (logand #x07 flags) s))
+          (file-position s (+ 26 o))
+          (write-byte 0 s))))))
+
+;;(fix-numbering "/home/hlavaty/Shared/numbering/Layout_von_Gesamt.doc")
+;;(fix-numbering "/home/hlavaty/Shared/numbering/Layout_von_Gesamt.doc.fixed.doc")
+
+;;(fix-numbering "/home/hlavaty/Shared/numbering/AG-Satzung.doc")
+;;(fix-numbering "/home/hlavaty/Shared/numbering/AG-Satzung-BB.doc")
+;;(fix-numbering "/home/hlavaty/Shared/numbering/tilo-testet-layoutvorlagen.doc")

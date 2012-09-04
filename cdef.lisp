@@ -67,16 +67,19 @@
   (declare (ignore options))
   `(progn
      (defstruct (,name (:conc-name ,(intern (format nil "~a." name))))
+       %physical-stream-position
        ,@(loop
             for slot in slots
             collect (list (car slot)
                           nil
                           :type (slot-type-definition (cadr slot)))))
      (defun ,(intern (format nil "READ-~a" name)) (stream)
-       (let* (,@(loop
+       (let* ((%physical-stream-position (physical-stream-position stream))
+              ,@(loop
                    for slot in slots
                    collect (apply 'slot-reader-let-definition slot)))
          (,(intern (format nil "MAKE-~a" name))
+           :%physical-stream-position %physical-stream-position
            ,@(loop
                 for slot in slots
                 appending (list
