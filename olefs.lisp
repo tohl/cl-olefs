@@ -325,6 +325,19 @@
           sector nil)))
 
 (defmethod trivial-gray-streams:stream-read-byte ((stream ole-entry-stream))
+  (values (%read-byte stream t)))
+
+(defun peek-byte (stream)
+  (values (%read-byte stream nil)))
+
+(defun physical-stream-position (stream)
+  (nth-value 1 (%read-byte stream nil)))
+
+(defun %read-byte (stream consumep)
+  ;; => :eof
+  ;;    | (values <current-byte>
+  ;;              <position-of-current-byte>)
+  ;; Advance the stream by a byte if CONSUMEP is true, except at eof.
   (with-slots (ole-file ole-entry offset chain mchain sector buffer size) stream
     (assert (not (minusp offset)))
     (if (< offset size)
@@ -335,8 +348,11 @@
                      (let ((n (read-sequence buffer ole-stream)))
                        (assert (eql 512 n))))
                    (setq sector q))
-                 (prog1 (aref buffer i)
-                   (incf offset))))
+                 (multiple-value-prog1
+		     (values (aref buffer i)
+			     (+ i (location-position (aref chain sector))))
+                   (when consumep
+		     (incf offset)))))
           (if mchain
               (multiple-value-bind (mq mr) (floor offset 64)
                 (multiple-value-bind (q r) (floor (aref mchain mq) (/ 512 64))
