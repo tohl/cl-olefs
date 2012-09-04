@@ -644,8 +644,8 @@
 (define-structure OfficeArtFOPTEOPID ()
   (%dummy ushort)
   (opid t :compute (logand #x3fff %dummy))
-  (fBid t :compute (if (zerop (logand #x4000 %dummy)) nil t))
-  (fComplex t :compute (if (zerop (logand #x8000 %dummy)) nil t)))
+  (fBid t :compute (not (zerop (logand #x4000 %dummy))))
+  (fComplex t :compute (not (zerop (logand #x8000 %dummy)))))
 
 (define-structure OfficeArtFBSE ()
   (btWin32 ubyte)
