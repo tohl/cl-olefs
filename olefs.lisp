@@ -354,8 +354,35 @@
 (defun ole-entry-stream (ole-file entry)
   (funcall ole-file 'ole-entry-stream entry))
 
-(defun traverse-directories (ole-file fn)
-  (funcall ole-file 'traverse-directories fn))
+(defun ole-directory-stream (ole-file)
+  (funcall ole-file 'ole-directory-stream))
+
+(defun traverse-directories (ole-file fn) ;; TODO better (streaming) interface
+  (let (e (s (ole-directory-stream ole-file)))
+    (loop
+       while (setq e (funcall s))
+       do (funcall fn e))))
+
+(defun %ole-directory-stream (directories)
+  (let ((pending (list (cons 0 0))))
+    (lambda ()
+      (block done
+        (loop
+           (if pending
+               (destructuring-bind (n &rest level) (pop pending)
+                 (let ((e (aref directories n)))
+                   (unless (zerop (ole-entry.object-type e))
+                     (let ((id (ole-entry.right-sibling-id e)))
+                       (when (<= id +maxregsig+)
+                         (push (cons id level) pending)))
+                     (let ((id (ole-entry.child-id e)))
+                       (when (<= id +maxregsig+)
+                         (push (cons id (1+ level)) pending)))
+                     (let ((id (ole-entry.left-sibling-id e)))
+                       (when (<= id +maxregsig+)
+                         (push (cons id level) pending)))
+                     (return-from done (values e n level)))))
+               (return-from done)))))))
 
 (defun ole-file-stream (filename)
   (let* ((stream (open filename :element-type '(unsigned-byte 8)))
@@ -382,28 +409,12 @@
         (ole-entry-stream
          (destructuring-bind (entry) args
            (%ole-entry-stream header fat directories mfat stream entry)))
-        (traverse-directories
-         (destructuring-bind (fn) args
-           (labels ((rec (n level)
-                      (let ((e (aref directories n)))
-                        (unless (zerop (ole-entry.object-type e))
-                          (funcall fn e n level)
-                          (let ((id (ole-entry.left-sibling-id e)))
-                            (when (<= id +maxregsig+)
-                              (rec id level)))
-                          (let ((id (ole-entry.child-id e)))
-                            (when (<= id +maxregsig+)
-                              (rec id (1+ level))))
-                          (let ((id (ole-entry.right-sibling-id e)))
-                            (when (<= id +maxregsig+)
-                              (rec id level)))))))
-             (rec 0 0))))))))
+        (ole-directory-stream (%ole-directory-stream directories))))))
 
 (defun extract-pictures (ole-file dir html)
   (traverse-directories
    ole-file
-   (lambda (entry id level)
-     (declare (ignore id level))
+   (lambda (entry)
      (case (ole-entry.object-type entry)
        (2 ;; stream
         (let ((entry-name (ole-entry-name-to-string
@@ -637,8 +648,7 @@
   (with-stream (ole-file (ole-file-stream filename))
     (traverse-directories
      ole-file
-     (lambda (entry id level)
-       (declare (ignore id level))
+     (lambda (entry)
        (case (ole-entry.object-type entry)
          (2 ;; stream
           (let ((entry-name (ole-entry-name-to-string
@@ -827,8 +837,7 @@
 (defun find-ole-entry (ole-file name)
   (traverse-directories
    ole-file
-   (lambda (entry id level)
-     (declare (ignore id level))
+   (lambda (entry)
      (let ((entry-name (ole-entry-name-to-string
                         (ole-entry.name entry)
                         (ole-entry.name-length entry))))
@@ -917,8 +926,7 @@
     (let ((u (block CurrentUser
                (traverse-directories
                 ole-file
-                (lambda (entry id level)
-                  (declare (ignore id level))
+                (lambda (entry)
                   (case (ole-entry.object-type entry)
                     (2 ;; stream
                      (let ((entry-name (ole-entry-name-to-string
@@ -1383,8 +1391,7 @@
         (block found1
           (traverse-directories
            ole-file
-           (lambda (entry id level)
-             (declare (ignore id level))
+           (lambda (entry)
              (case (ole-entry.object-type entry)
                (2 ;; stream
                 (let ((entry-name (ole-entry-name-to-string
@@ -1407,8 +1414,7 @@
         (block found2
           (traverse-directories
            ole-file
-           (lambda (entry id level)
-             (declare (ignore id level))
+           (lambda (entry)
              (case (ole-entry.object-type entry)
                (2 ;; stream
                 (let ((entry-name (ole-entry-name-to-string
