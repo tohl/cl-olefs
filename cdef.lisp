@@ -40,11 +40,11 @@
 (defun slot-type-read (type)
   (cond
     ((eq 'ubyte type)
-     `(read-byte stream))
+     `(read-octet stream))
     ((atom type)
      `(,(intern (format nil "READ-~a" type)) stream))
     ((eq 'ubyte (car type))
-     `(read-byte-vector stream ,(cadr type)))
+     `(read-octets stream ,(cadr type)))
     (t
      `(read-vector stream ,(cadr type) ',(car type)
                    ',(intern (format nil "READ-~a" (car type)))))))

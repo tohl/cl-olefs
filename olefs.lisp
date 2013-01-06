@@ -22,6 +22,73 @@
 
 (in-package :olefs)
 
+(defmacro with-stream ((var stream) &body body)
+  `(let ((,var ,stream))
+     (unwind-protect (progn ,@body)
+       (funcall ,var 'close))))
+
+(defun stream-position (stream &optional newpos)
+  (if (functionp stream)
+      (funcall stream 'stream-position newpos)
+      (if newpos
+          (file-position stream newpos)
+          (file-position stream))))
+
+(defun physical-stream-position (stream)
+  (if (functionp stream)
+      (funcall stream 'physical-stream-position)
+      (file-position stream)))
+
+(defun read-octet (stream)
+  (if (functionp stream)
+      (funcall stream 'read-octet)
+      (read-byte stream)))
+
+(defun copy-stream (in out)
+  (handler-case (loop (write-byte (read-octet in) out))
+    (end-of-file ())))
+
+(defun copy-file (in out)
+  (with-open-file (i in :element-type '(unsigned-byte 8))
+    (with-open-file (o out
+                       :element-type '(unsigned-byte 8)
+                       :direction :output
+                       :if-exists :error
+                       :if-does-not-exist :create)
+      (loop
+         with buf = (make-array 4096 :element-type '(unsigned-byte 8))
+         with n = nil
+         while (plusp (setq n (read-sequence buf i)))
+         do (write-sequence buf o :end n)))))
+
+(defun shorter-stream (stream size)
+  (let ((offset 0))
+    (lambda (msg)
+      (assert stream)
+      (ecase msg
+        (close (setq stream nil))
+        (stream-position offset)
+        (read-octet
+         (unless (< offset size)
+           (error 'end-of-file))
+         (incf offset)
+         (read-octet stream))))))
+
+(defun vector-stream (vector physical-stream-position)
+  (let ((offset 0)
+        (size (length vector)))
+    (lambda (msg)
+      (assert vector)
+      (ecase msg
+        (close (setq vector nil))
+        (stream-position offset)
+        (physical-stream-position (+ offset physical-stream-position))
+        (read-octet
+         (unless (< offset size)
+           (error 'end-of-file))
+         (prog1 (aref vector offset)
+           (incf offset)))))))
+
 ;;; MS-CFB Compound File Binary File Format
 
 (defconstant +unused-sector+ 0)
@@ -40,27 +107,27 @@
                                     :initial-element 0))
 
 (defun read-ushort (stream)
-  (logior (read-byte stream)
-          (ash (read-byte stream) 8)))
+  (logior (read-octet stream)
+          (ash (read-octet stream) 8)))
 
 (defun read-dword (stream)
-  (logior (read-byte stream)
-          (ash (read-byte stream) 8)
-          (ash (read-byte stream) 16)
-          (ash (read-byte stream) 24)))
+  (logior (read-octet stream)
+          (ash (read-octet stream) 8)
+          (ash (read-octet stream) 16)
+          (ash (read-octet stream) 24)))
 
 (defun read-ulonglong (stream)
-  (logior (read-byte stream)
-          (ash (read-byte stream) 8)
-          (ash (read-byte stream) 16)
-          (ash (read-byte stream) 24)
-          (ash (read-byte stream) 32)
-          (ash (read-byte stream) 40)
-          (ash (read-byte stream) 48)
-          (ash (read-byte stream) 56)))
+  (logior (read-octet stream)
+          (ash (read-octet stream) 8)
+          (ash (read-octet stream) 16)
+          (ash (read-octet stream) 24)
+          (ash (read-octet stream) 32)
+          (ash (read-octet stream) 40)
+          (ash (read-octet stream) 48)
+          (ash (read-octet stream) 56)))
 
 (defun read-achar (stream)
-  (read-byte stream))
+  (read-octet stream))
 
 (defun read-wchar (stream)
   (read-ushort stream))
@@ -68,13 +135,20 @@
 (defun read-filetime (stream)
   (read-ulonglong stream))
 
-(defun read-byte-vector (stream n)
+(defun read-octets (stream n)
   (let ((x (make-array n :element-type '(unsigned-byte 8) :initial-element 0)))
-    (read-sequence x stream)
+    (if (functionp stream)
+        (let ((i 0))
+          (handler-case (do ()
+                            ((<= n i))
+                          (setf (aref x i) (read-octet stream))
+                          (incf i))
+            (end-of-file () i)))
+        (read-sequence x stream))
     x))
 
 (defun read-guid (stream)
-  (read-byte-vector stream 16))
+  (read-octets stream 16))
 
 (defun read-vector (stream n element-type reader)
   (let ((x (make-array n :element-type element-type :initial-element 0)))
@@ -140,7 +214,7 @@
 
 (defun seek-sector (location stream)
   (let ((position (location-position location)))
-    (assert (file-position stream position))
+    (assert (stream-position stream position))
     location))
 
 (defun check-ole-header (x)
@@ -159,9 +233,6 @@
   ;;(assert (eql #xfffffffe (first-mini-fat-sector-location x)))
   (unless (plusp (ole-header.number-of-difat-sectors x))
     (assert (eql #xfffffffe (ole-header.first-difat-sector-location x)))))
-
-(defstruct (ole-file (:conc-name ole-file.))
-  filename stream header difat fat directory-chain directories mfat-chain mfat)
 
 (defun sector-chain (fat location)
   (labels ((rec (x)
@@ -223,154 +294,110 @@
       (dotimes (j m)
         (setf (aref x (incf i)) (read-dword stream))))))
 
-(defun traverse-directories (ole-file callback)
-  (let ((d (ole-file.directories ole-file)))
-    (labels ((rec (n level)
-               (let ((e (aref d n)))
-                 (unless (zerop (ole-entry.object-type e))
-                   (funcall callback e n level)
-                   (let ((id (ole-entry.left-sibling-id e)))
-                     (when (<= id +maxregsig+)
-                       (rec id level)))
-                   (let ((id (ole-entry.child-id e)))
-                     (when (<= id +maxregsig+)
-                       (rec id (1+ level))))
-                   (let ((id (ole-entry.right-sibling-id e)))
-                     (when (<= id +maxregsig+)
-                       (rec id level)))))))
-      (rec 0 0))))
+(defun %ole-entry-stream (header fat directories mfat stream ole-entry)
+  (let* ((offset 0)
+         (mini (< (ole-entry.stream-size ole-entry)
+                  (ole-header.mini-stream-cutoff-size header)))
+         (chain (let ((x (sector-chain
+                          fat
+                          (ole-entry.starting-sector-location
+                           (if mini
+                               (aref directories 0)
+                               ole-entry)))))
+                  (when x
+                    (coerce x 'vector))))
+         (mchain (when mini
+                   (let ((x (sector-chain
+                             mfat
+                             (ole-entry.starting-sector-location ole-entry))))
+                     (when x
+                       (coerce x 'vector)))))
+         sector
+         (buffer (make-array 512 :element-type '(unsigned-byte 8)))
+         (size (ole-entry.stream-size ole-entry)))
+    (lambda (msg &rest args)
+      (assert stream)
+      (flet ((next-octet (consumep)
+               ;; (values <current-byte> <position-of-current-byte>)
+               ;; Advance the stream by a byte if CONSUMEP is true, except at eof.
+               (assert (not (minusp offset)))
+               (unless (< offset size)
+                 (error 'end-of-file))
+               (flet ((pick (q i)
+                        (unless (eql sector q)
+                          (seek-sector (aref chain q) stream)
+                          (let ((n (read-sequence buffer stream)))
+                            (assert (eql 512 n)))
+                          (setq sector q))
+                        (multiple-value-prog1
+                            (values (aref buffer i)
+                                    (+ i (location-position (aref chain sector))))
+                          (when consumep
+                            (incf offset)))))
+                 (if mchain
+                     (multiple-value-bind (mq mr) (floor offset 64)
+                       (multiple-value-bind (q r) (floor (aref mchain mq) (/ 512 64))
+                         (pick q (+ (* r 64) mr))))
+                     (multiple-value-bind (q r) (floor offset 512)
+                       (pick q r))))))
+        (ecase msg
+          (close (setq stream nil))
+          (stream-position
+           (destructuring-bind (&optional newpos) args
+             (if newpos
+                 (setf offset newpos
+                       sector nil)
+                 offset)))
+          (physical-stream-position (nth-value 1 (next-octet nil)))
+          (read-octet (values (next-octet t))))))))
 
-(defun call-with-ole-file (filename fn)
-  (with-open-file (stream filename :element-type '(unsigned-byte 8))
-    (let* ((header (read-ole-header stream))
-           (difat (read-difat header stream))
-           (fat (read-fat difat stream))
-           (directory-chain (sector-chain
-                             fat
-                             (ole-header.first-directory-sector-location header)))
-           (directories (read-directories directory-chain stream))
-           (mfat-chain (sector-chain
-                        fat
-                        (ole-header.first-mini-fat-sector-location header)))
-           (mfat (read-mfat mfat-chain stream))
-           (ole-file (make-ole-file
-                      :filename filename
-                      :stream stream
-                      :header header
-                      :difat difat
-                      :fat fat
-                      :directory-chain directory-chain
-                      :directories directories
-                      :mfat-chain mfat-chain
-                      :mfat mfat)))
-      ;;(describe ole-file)
-      (check-ole-header (ole-file.header ole-file))
-      ;;(describe header)
-      ;;(terpri)
-      #+nil
-      (traverse-directories ole-file
-                            (lambda (entry id level)
-                              (declare (ignore id))
-                              (dotimes (i level)
-                                (write-string "   "))
-                              (print-ole-entry entry *standard-output*)
-                              (terpri)))
-      (funcall fn ole-file))))
+(defun ole-entry-stream (ole-file entry)
+  (funcall ole-file 'ole-entry-stream entry))
 
-(defmacro with-ole-file ((ole-file filename) &body body)
-  `(call-with-ole-file ,filename (lambda (,ole-file) ,@body)))
+(defun traverse-directories (ole-file fn)
+  (funcall ole-file 'traverse-directories fn))
 
-(defclass ole-entry-stream (trivial-gray-streams:fundamental-binary-input-stream
-                            trivial-gray-streams:trivial-gray-stream-mixin)
-  ((ole-file :initarg :ole-file)
-   (ole-entry :initarg :ole-entry)
-   (offset :initform 0)
-   (chain)
-   (mchain)
-   (sector :initform nil)
-   (buffer :initform (make-array 512 :element-type '(unsigned-byte 8)))
-   (size)))
-
-(defmethod initialize-instance :after ((instance ole-entry-stream) &rest initargs)
-  (declare (ignore initargs))
-  (with-slots (ole-file ole-entry chain mchain buffer size) instance
-    (let ((mini (< (ole-entry.stream-size ole-entry)
-                   (ole-header.mini-stream-cutoff-size (ole-file.header ole-file)))))
-      (setq chain (let ((x (sector-chain
-                            (ole-file.fat ole-file)
-                            (ole-entry.starting-sector-location
-                             (if mini
-                                 (aref (ole-file.directories ole-file) 0)
-                                 ole-entry)))))
-                    (when x
-                      (coerce x 'vector)))
-            mchain (when mini
-                     (let ((x (sector-chain
-                               (ole-file.mfat ole-file)
-                               (ole-entry.starting-sector-location ole-entry))))
-                       (when x
-                         (coerce x 'vector))))
-            size (ole-entry.stream-size ole-entry)))))
-
-(defmethod trivial-gray-streams::stream-element-type ((stream ole-entry-stream))
-  '(unsigned-byte 8))
-
-(defmethod trivial-gray-streams:stream-file-position ((stream ole-entry-stream))
-  (with-slots (offset) stream
-    offset))
-
-(defmethod (setf trivial-gray-streams:stream-file-position) (x (stream ole-entry-stream))
-  (with-slots (offset sector) stream
-    (setf offset x
-          sector nil)))
-
-(defmethod trivial-gray-streams:stream-read-byte ((stream ole-entry-stream))
-  (values (%read-byte stream t)))
-
-(defun peek-byte (stream)
-  (values (%read-byte stream nil)))
-
-(defun physical-stream-position (stream)
-  (typecase stream
-    (ole-entry-stream (nth-value 1 (%read-byte stream nil)))
-    (t (file-position stream))))
-
-(defun %read-byte (stream consumep)
-  ;; => :eof
-  ;;    | (values <current-byte>
-  ;;              <position-of-current-byte>)
-  ;; Advance the stream by a byte if CONSUMEP is true, except at eof.
-  (with-slots (ole-file ole-entry offset chain mchain sector buffer size) stream
-    (assert (not (minusp offset)))
-    (if (< offset size)
-        (flet ((pick (q i)
-                 (unless (eql sector q)
-                   (let ((ole-stream (ole-file.stream ole-file)))
-                     (seek-sector (aref chain q) ole-stream)
-                     (let ((n (read-sequence buffer ole-stream)))
-                       (assert (eql 512 n))))
-                   (setq sector q))
-                 (multiple-value-prog1
-		     (values (aref buffer i)
-			     (+ i (location-position (aref chain sector))))
-                   (when consumep
-		     (incf offset)))))
-          (if mchain
-              (multiple-value-bind (mq mr) (floor offset 64)
-                (multiple-value-bind (q r) (floor (aref mchain mq) (/ 512 64))
-                  (pick q (+ (* r 64) mr))))
-              (multiple-value-bind (q r) (floor offset 512)
-                (pick q r))))
-        :eof)))
-
-(defun call-with-ole-entry-stream (stream fn)
-  (with-open-stream (x stream)
-    (funcall fn x)))
-
-(defmacro with-ole-entry-stream ((var ole-file ole-entry) &body body)
-  `(call-with-ole-entry-stream
-    (make-instance 'ole-entry-stream :ole-file ,ole-file :ole-entry ,ole-entry)
-    (lambda (,var) ,@body)))
+(defun ole-file-stream (filename)
+  (let* ((stream (open filename :element-type '(unsigned-byte 8)))
+         (header (read-ole-header stream))
+         (difat (read-difat header stream))
+         (fat (read-fat difat stream))
+         (directory-chain (sector-chain
+                           fat
+                           (ole-header.first-directory-sector-location header)))
+         (directories (read-directories directory-chain stream))
+         (mfat-chain (sector-chain
+                      fat
+                      (ole-header.first-mini-fat-sector-location header)))
+         (mfat (read-mfat mfat-chain stream)))
+    (check-ole-header header)
+    ;;(describe header)
+    ;;(terpri)
+    (lambda (msg &rest args)
+      (assert stream)
+      (ecase msg
+        (close
+         (close stream)
+         (setq stream nil))
+        (ole-entry-stream
+         (destructuring-bind (entry) args
+           (%ole-entry-stream header fat directories mfat stream entry)))
+        (traverse-directories
+         (destructuring-bind (fn) args
+           (labels ((rec (n level)
+                      (let ((e (aref directories n)))
+                        (unless (zerop (ole-entry.object-type e))
+                          (funcall fn e n level)
+                          (let ((id (ole-entry.left-sibling-id e)))
+                            (when (<= id +maxregsig+)
+                              (rec id level)))
+                          (let ((id (ole-entry.child-id e)))
+                            (when (<= id +maxregsig+)
+                              (rec id (1+ level))))
+                          (let ((id (ole-entry.right-sibling-id e)))
+                            (when (<= id +maxregsig+)
+                              (rec id level)))))))
+             (rec 0 0))))))))
 
 (defun extract-pictures (ole-file dir html)
   (traverse-directories
@@ -382,13 +409,14 @@
         (let ((entry-name (ole-entry-name-to-string
                            (ole-entry.name entry)
                            (ole-entry.name-length entry))))
-          (with-ole-entry-stream (in ole-file entry)
+          #+nil
+          (with-stream (in (ole-entry-stream ole-file entry))
             (with-open-file (out (format nil "~a/~a" dir entry-name)
                                  :direction :output
                                  :if-does-not-exist :create
                                  :if-exists :supersede
                                  :element-type '(unsigned-byte 8))
-              (alexandria:copy-stream in out)))
+              (copy-stream in out)))
           (when (equal "Pictures" entry-name)
             (walk-RecordHeader-tree
              ole-file
@@ -408,13 +436,13 @@
                                            :if-does-not-exist :create
                                            :if-exists :supersede
                                            :element-type '(unsigned-byte 8))
-                        (alexandria:copy-stream in out))))
+                        (copy-stream in out))))
                  (declare (ignore blip))
                  (when html
-                   (format html "<p><img src=\"_~d.~(~a~)\">~%" i kind))))))))))))
+                   (format html "<p><img src=\"~d.~(~a~)\">~%" i kind))))))))))))
 
 (defun extract-ole-file (filename &optional (dir "/tmp")) ;; TODO extract audio files
-  (with-ole-file (ole-file filename)
+  (with-stream (ole-file (ole-file-stream filename))
     (with-open-file (html (format nil "~a/index.html" dir)
                           :direction :output
                           :if-does-not-exist :create
@@ -446,36 +474,6 @@
   (unicodeUserName (wchar lenUserName)))
 
 ;;; MS-ODRAW Office Drawing Binary File Format
-
-(defclass shorter-stream (trivial-gray-streams:fundamental-binary-input-stream
-                          trivial-gray-streams:trivial-gray-stream-mixin)
-  ((wrap :initarg :wrap)
-   (size :initarg :size)
-   (offset :initform 0)))
-
-(defmethod trivial-gray-streams::stream-element-type ((stream shorter-stream))
-  '(unsigned-byte 8))
-
-(defmethod trivial-gray-streams:stream-file-position ((stream shorter-stream))
-  (with-slots (offset) stream
-    offset))
-
-(defmethod trivial-gray-streams:stream-read-byte ((stream shorter-stream))
-  (with-slots (wrap size offset) stream
-    (cond
-      ((< offset size)
-       (incf offset)
-       (read-byte wrap))
-      (t :eof))))
-
-(defun call-with-shorter-stream (stream fn)
-  (with-open-stream (x stream)
-    (funcall fn x)))
-
-(defmacro with-shorter-stream ((var wrap size) &body body)
-  `(call-with-shorter-stream
-    (make-instance 'shorter-stream :wrap ,wrap :size ,size)
-    (lambda (,var) ,@body)))
 
 (define-structure POINT ()
   (x dword)
@@ -509,8 +507,8 @@
   (let ((x RecordHeader #+nil(read-RecordHeader stream)))
     (with-slots (recVer recInstance recType recLen) x
       (flet ((blip (ext guid2 &optional metafileHeader)
-               (with-shorter-stream (in stream (RecordHeader.recLen x))
-                 (let* ((start (file-position stream))
+               (with-stream (in (shorter-stream stream (RecordHeader.recLen x)))
+                 (let* ((start (stream-position stream))
                         (end (+ start (RecordHeader.recLen x)))
                         (y (make-blip
                             :header x
@@ -520,11 +518,11 @@
                                      (read-guid in))
                             :metafileHeader (if metafileHeader
                                                 (read-OfficeArtMetafileHeader in)
-                                                (read-byte in)))))
+                                                (read-octet in)))))
                    (when fn
                      (funcall fn y in))
-                   (unless (eql end (file-position stream))
-                     (file-position stream end))
+                   (unless (eql end (stream-position stream))
+                     (stream-position stream end))
                    y))))
         (ecase recType
           (#.RT_CurrentUserAtom
@@ -537,18 +535,18 @@
           (#.RT_UserEditAtom
            (assert (zerop recVer))
            (assert (zerop recInstance))
-           (with-shorter-stream (in stream (RecordHeader.recLen x))
+           (with-stream (in (shorter-stream stream (RecordHeader.recLen x)))
              (list x (read-UserEditAtom in))))
           (#.RT_PersistDirectoryAtom
            (assert (zerop recVer))
            (assert (zerop recInstance))
            (let ((n (RecordHeader.recLen x)))
              ;;(print n)
-             (with-shorter-stream (in stream n)
+             (with-stream (in (shorter-stream stream n))
                (make-PersistDirectoryAtom
                 :header x
                 :entries (loop
-                            for fpos = 0 then (file-position in)
+                            for fpos = 0 then (stream-position in)
                             while (< fpos n)
                             collect (progn
                                       ;;(print fpos)
@@ -594,14 +592,14 @@
 
 (defun walk-RecordHeader-tree (ole-file entry fn &optional post-fn)
   (when entry
-    (with-ole-entry-stream (in ole-file entry)
+    (with-stream (in (ole-entry-stream ole-file entry))
       (labels ((rec (level pos parents)
                  (handler-case
                      (loop
                         for i from 0
-                        until (<= 1 pos (file-position in))
+                        until (<= 1 pos (stream-position in))
                         do (let* ((h (read-RecordHeader in))
-                                  (start (file-position in))
+                                  (start (stream-position in))
                                   (end (+ start (RecordHeader.recLen h))))
                              (funcall fn in level i h start end parents)
                              (if (= #xf (RecordHeader.recVer h))
@@ -610,7 +608,7 @@
                                           (min pos end)
                                           end)
                                       (cons h parents))
-                                 (file-position in end))
+                                 (stream-position in end))
                              (when post-fn
                                (funcall post-fn in level i h start end parents))))
                    (end-of-file ()
@@ -636,7 +634,7 @@
              (enum-by-value 'RecordType (RecordHeader.recType h))))))
 
 (defun print-RecordHeader-tree-from-ppt-file (filename)
-  (with-ole-file (ole-file filename)
+  (with-stream (ole-file (ole-file-stream filename))
     (traverse-directories
      ole-file
      (lambda (entry id level)
@@ -781,13 +779,13 @@
                    (with-output-to-string (s)
                      (loop
                         for j from 0 below (RecordHeader.recLen h)
-                        do (format s "~a" (ascii-char (read-byte in))))))
+                        do (format s "~a" (ascii-char (read-octet in))))))
                   texts))
                 (t
                  (out "<p>")
                  (loop
                     for j from 0 below (RecordHeader.recLen h)
-                    do (out "~a" (ascii-char (read-byte in))))
+                    do (out "~a" (ascii-char (read-octet in))))
                  (out "</p>~%")))))
            (#.RT_OUTLINETEXTREFATOM
             (let* ((index (1+ (read-dword in)))
@@ -801,10 +799,10 @@
                   (out "<p>!!!</p>~%"))))
            ;; TODO RT_DOCUMENT / RT_SLIDELISTWITHTEXT / RT_TEXTBYTESATOM
            (#.RT_OfficeArtFOPT
-            (with-shorter-stream (s in (RecordHeader.recLen h))
+            (with-stream (s (shorter-stream in (RecordHeader.recLen h)))
               (let ((len (RecordHeader.recLen h)))
                 (loop
-                   while (< (file-position s) len)
+                   while (< (stream-position s) len)
                    do (let ((opid (read-OfficeArtFOPTEOPID s))
                             (value (read-dword s)))
                         ;;(out "<p>...... ~s ~s</p>~%" opid value)
@@ -838,7 +836,7 @@
          (return-from find-ole-entry entry))))))
 
 (defun ppt-file-to-html-naive (filename &optional (stream *standard-output*))
-  (with-ole-file (ole-file filename)
+  (with-stream (ole-file (ole-file-stream filename))
     (let ((pictures nil))
       ;;(extract-pictures ole-file dir html) ;; TODO mount olefs and traverse Pictures only once
       (walk-RecordHeader-tree ole-file
@@ -898,7 +896,7 @@
             (out "<p>")
             (loop
                for j from 0 below (RecordHeader.recLen h)
-               do (out "~a" (ascii-char (read-byte in))))
+               do (out "~a" (ascii-char (read-octet in))))
             (out "</p>~%")))))
       (out "</div>~%</body>~%</html>~%"))))
 
@@ -915,7 +913,7 @@
                 (setf (gethash k htab) o)))))))
 
 (defun ppt-file-to-html (filename &optional (stream *standard-output*))
-  (with-ole-file (ole-file filename)
+  (with-stream (ole-file (ole-file-stream filename))
     (let ((u (block CurrentUser
                (traverse-directories
                 ole-file
@@ -946,21 +944,22 @@
                                     (declare (ignore blip))
                                     (push (list i (- start 8) kind) pictures))))
         (print (list :pictures pictures))
-        (with-ole-entry-stream (in ole-file
-                                   (find-ole-entry ole-file "PowerPoint Document"))
+        (with-stream (in (ole-entry-stream
+                          ole-file
+                          (find-ole-entry ole-file "PowerPoint Document")))
           (let ((htab (make-hash-table)) ;; persist oid -> fpos
                 (first-UserEditAtom nil))
-            (file-position in (CurrentUserAtom.offsetToCurrentEdit u))
+            (stream-position in (CurrentUserAtom.offsetToCurrentEdit u))
             (loop
                for e = (cadr (read-record in)) then (cadr (read-record in))
                do (progn
                     ;;(describe e)
                     (unless first-UserEditAtom
                       (setq first-UserEditAtom e))
-                    (file-position in (UserEditAtom.offsetPersistDirectory e))
+                    (stream-position in (UserEditAtom.offsetPersistDirectory e))
                     (process-PersistDirectoryAtom htab in))
                until (zerop (UserEditAtom.offsetLastEdit e))
-               do (file-position in (UserEditAtom.offsetLastEdit e)))
+               do (stream-position in (UserEditAtom.offsetLastEdit e)))
             ;; live PersistDirectory
             (let ((persist-directory nil))
               (maphash (lambda (k v) (push (cons k v) persist-directory)) htab)
@@ -968,39 +967,10 @@
               (print persist-directory))
             ;; live DocumentContainer
             (print (gethash (UserEditAtom.docPersistIdRef first-UserEditAtom) htab)))
-          #+nil(file-position in 0)
+          #+nil(stream-position in 0)
           #+nil(print (read-record in)))))))
 
 ;;; MS-DOC Word (.doc) Binary File Format
-
-(defclass vector-stream (trivial-gray-streams:fundamental-binary-input-stream
-                         trivial-gray-streams:trivial-gray-stream-mixin)
-  ((wrap :initarg :wrap)
-   (offset :initform 0)))
-
-(defmethod trivial-gray-streams::stream-element-type ((stream vector-stream))
-  '(unsigned-byte 8))
-
-(defmethod trivial-gray-streams:stream-file-position ((stream vector-stream))
-  (with-slots (offset) stream
-    offset))
-
-(defmethod trivial-gray-streams:stream-read-byte ((stream vector-stream))
-  (with-slots (wrap offset) stream
-    (cond
-      ((< offset (length wrap))
-       (prog1 (aref wrap offset)
-         (incf offset)))
-      (t :eof))))
-
-(defun call-with-vector-stream (stream fn)
-  (with-open-stream (x stream)
-    (funcall fn x)))
-
-(defmacro with-vector-stream ((var wrap) &body body)
-  `(call-with-vector-stream
-    (make-instance 'vector-stream :wrap ,wrap)
-    (lambda (,var) ,@body)))
 
 (define-structure FibBase ()
   (wIdent ushort)
@@ -1229,15 +1199,17 @@
          (csw (let ((x (read-ushort stream)))
                 (assert (= x #x0e))
                 x))
-         (fibRgW (read-vector stream 28 '(unsigned-byte 8) 'read-byte))
+         (fibRgW (read-vector stream 28 '(unsigned-byte 8) 'read-octet))
          (cslw (let ((x (read-ushort stream)))
                  (assert (= x #x16))
                  x))
-         (fibRgLw (read-vector stream 88 '(unsigned-byte 8) 'read-byte))
+         (fibRgLw (read-vector stream 88 '(unsigned-byte 8) 'read-octet))
          (cbRgFcLcb (read-ushort stream))
-         (fibRgFcLcbBlob (read-vector stream (* 8 cbRgFcLcb) '(unsigned-byte 8) 'read-byte))
+         (fibRgFcLcbBlob-position (stream-position stream))
+         (fibRgFcLcbBlob (read-vector stream (* 8 cbRgFcLcb) '(unsigned-byte 8) 'read-octet))
          (cswNew (read-ushort stream))
-         (fibRgCswNew (read-vector stream cswNew '(unsigned-byte 8) 'read-byte))
+         (fibRgCswNew (read-vector stream cswNew '(unsigned-byte 8) 'read-octet))
+         #+nil
          (nFib (if (zerop cswNew)
                    (FibBase.nFib base)
                    -1 #+nil(assert (zerop cswNew))))) ;; TODO implement this case
@@ -1265,7 +1237,8 @@
               :fibRgLw fibRgLw
               :cbRgFcLcb cbRgFcLcb
               :fibRgFcLcbBlob fibRgFcLcbBlob
-              :fibRgFcLcb (with-vector-stream (s fibRgFcLcbBlob)
+              :fibRgFcLcb (with-stream (s (vector-stream fibRgFcLcbBlob
+                                                         fibRgFcLcbBlob-position))
                             (read-FibRgFcLcb97 s))
               :cswNew cswNew
               :fibRgCswNew fibRgCswNew)))
@@ -1321,7 +1294,7 @@
 (defstruct PChgTabsDelClose cTabs rgdxaDel rgdxaClose)
 
 (defun read-PChgTabsDelClose (stream)
-  (let ((cTabs (read-byte stream)))
+  (let ((cTabs (read-octet stream)))
     (assert (<= 0 cTabs 64))
     (let ((rgdxaDel (read-vector stream cTabs t 'read-ushort))
           (rgdxaClose (read-vector stream cTabs t 'read-ushort)))
@@ -1333,10 +1306,10 @@
 (defstruct PChgTabsAdd cTabs rgdxaAdd rgtbdAdd)
 
 (defun read-PChgTabsAdd (stream)
-  (let ((cTabs (read-byte stream)))
+  (let ((cTabs (read-octet stream)))
     (assert (<= 0 cTabs 64))
     (let ((rgdxaAdd (read-vector stream cTabs t 'read-ushort))
-          (rgtbdAdd (read-vector stream cTabs t 'read-byte))) ;; TODO decode TBD struct
+          (rgtbdAdd (read-vector stream cTabs t 'read-octet))) ;; TODO decode TBD struct
       (assert (equalp rgdxaAdd (sort (copy-seq rgdxaAdd) #'<=)))
       (make-PChgTabsAdd :cTabs cTabs
                         :rgdxaAdd rgdxaAdd
@@ -1345,9 +1318,9 @@
 (defstruct PChgTabsOperand cb DelClose Add)
 
 (defun read-PChgTabsOperand (stream)
-  (let ((cb (read-byte stream)))
+  (let ((cb (read-octet stream)))
     (assert (< 1 cb 255)) ;; TODO 255
-    ;;(read-vector stream cb t 'read-byte)
+    ;;(read-vector stream cb t 'read-octet)
     (make-PChgTabsOperand :cb cb
                           :DelClose (read-PChgTabsDelClose stream)
                           :Add (read-PChgTabsAdd stream))))
@@ -1357,19 +1330,19 @@
 (defun read-Prl (stream)
   (let ((sprm (read-Sprm stream)))
     ;; (when (zerop (Sprm.sgc sprm))
-    ;;   (print (list :@@@-!!! (read-vector stream 10 t 'read-byte))))
+    ;;   (print (list :@@@-!!! (read-vector stream 10 t 'read-octet))))
     (assert (member (Sprm.sgc sprm) '(1 2 3 4 5)))
     (make-Prl
      :sprm sprm
      :operand (ecase (Sprm.spra sprm)
-                (0 (read-byte stream))
-                (1 (read-byte stream))
+                (0 (read-octet stream))
+                (1 (read-octet stream))
                 (2 (read-ushort stream))
                 (3 (read-dword stream))
                 (4 (read-ushort stream))
                 (5 (read-ushort stream))
                 (6 (flet ((rd ()
-                            (read-vector stream (read-byte stream) t 'read-byte)))
+                            (read-vector stream (read-octet stream) t 'read-octet)))
                      (ecase (Sprm.sgc sprm)
                        (1 (ecase (Sprm.flags sprm) ;; par
                             (#xc615 (read-PChgTabsOperand stream))))
@@ -1377,9 +1350,9 @@
                        (3 (rd))     ;; pic
                        (4 (rd))     ;; sec
                        #+nil(5 )))) ;; tab
-                (7 (read-vector stream 3 t 'read-byte))))))
+                (7 (read-vector stream 3 t 'read-octet))))))
 
-;;(defstruct Xst blob parsed)
+(defstruct Xst blob parsed)
 
 (defun read-Xst (stream)
   ;;(read-vector stream (read-ushort stream) t 'read-ushort)
@@ -1396,15 +1369,15 @@
     ;;(describe lvlf)
     (make-LVL
      :lvlf lvlf
-     :grpprlPapx (read-vector stream (LVLF.cbGrpprlPapx lvlf) t 'read-byte)
-     :grpprlChpx (read-vector stream (LVLF.cbGrpprlChpx lvlf) t 'read-byte)
+     :grpprlPapx (read-vector stream (LVLF.cbGrpprlPapx lvlf) t 'read-octet)
+     :grpprlChpx (read-vector stream (LVLF.cbGrpprlChpx lvlf) t 'read-octet)
      ;; :grpprlPapx (read-vector stream (LVLF.cbGrpprlPapx lvlf) t 'read-prl)
      ;; :grpprlChpx (read-vector stream (LVLF.cbGrpprlChpx lvlf) t 'read-prl)
      :xst (read-Xst stream))))
 
 (defun fix-numbering (filename)
   (let (offsets)
-    (with-ole-file (ole-file filename)
+    (with-stream (ole-file (ole-file-stream filename))
       #+nil(break "~s" ole-file)
       (let (fcPlfLst lcbPlfLst)
         (block found1
@@ -1418,7 +1391,7 @@
                                    (ole-entry.name entry)
                                    (ole-entry.name-length entry))))
                   (when (equal "WordDocument" entry-name)
-                    (with-ole-entry-stream (in ole-file entry)
+                    (with-stream (in (ole-entry-stream ole-file entry))
                       (let ((fib (read-fib in)))
                         ;;(describe fib)
                         (let ((x (fib-fibRgFcLcb fib)))
@@ -1427,7 +1400,7 @@
                         (return-from found1)
                         #+nil
                         (multiple-value-bind (fcPlfLst lcbPlfLst)
-                            (with-vector-stream (s (subseq (fib-fibRgFcLcbBlob fib) #.(* 4 146)))
+                            (with-stream (s (vector-stream (subseq (fib-fibRgFcLcbBlob fib) #.(* 4 146))))
                               (values (read-dword s) (read-dword s)))
                           (print (list :@@@ fcPlfLst lcbPlfLst))
                           ))))))))))
@@ -1443,8 +1416,8 @@
                                    (ole-entry.name-length entry))))
                   (when (or (equal "0Table" entry-name) ;; TODO be sure which one?
                             (equal "1Table" entry-name))
-                    (with-ole-entry-stream (in ole-file entry)
-                      (file-position in fcPlfLst)
+                    (with-stream (in (ole-entry-stream ole-file entry))
+                      (stream-position in fcPlfLst)
                       (let ((PlfLst (read-PlfLst in)))
                         (let ((n 0))
                           (dotimes (i (length PlfLst))
@@ -1477,7 +1450,7 @@
                     (return-from found2))))))))
         #+nil(values fcPlfLst lcbPlfLst)))
     (let ((fixed (format nil "~a.fixed.doc" filename)))
-      (alexandria:copy-file filename fixed)
+      (copy-file filename fixed)
       ;;(print (list :@@@-offsets offsets))
       (with-open-file (s fixed
                          :direction :io
@@ -1485,12 +1458,12 @@
                          :if-does-not-exist :error
                          :element-type '(unsigned-byte 8))
         (dolist (o offsets)
-          (file-position s (+ 5 o))
-          (let ((flags (read-byte s)))
-            (file-position s (+ 5 o))
+          (stream-position s (+ 5 o))
+          (let ((flags (read-octet s)))
+            (stream-position s (+ 5 o))
             (write-byte (logior #x08 flags) s)
             #+nil(write-byte (logand #x07 flags) s))
-          (file-position s (+ 26 o))
+          (stream-position s (+ 26 o))
           (write-byte 0 s))))))
 
 ;;(fix-numbering "/home/hlavaty/Shared/numbering/Layout_von_Gesamt.doc")

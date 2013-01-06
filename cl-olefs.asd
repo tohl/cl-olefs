@@ -29,11 +29,9 @@
 
 (defsystem :cl-olefs
   :description "OLE File System tools for Common Lisp."
-  :version ""
   :author "Tomas Hlavaty <tom@logand.com>"
   :maintainer "Tomas Hlavaty <tom@logand.com>"
   :licence "MIT"
-  :depends-on (:trivial-gray-streams :alexandria)
   :serial t
   :components ((:file "package")
                (:file "cdef")
