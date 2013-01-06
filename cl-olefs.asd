@@ -1,6 +1,6 @@
 ;;; -*- lisp; -*-
 
-;;; Copyright (C) 2011, 2012 Tomas Hlavaty <tom@logand.com>
+;;; Copyright (C) 2011, 2012, 2013 Tomas Hlavaty <tom@logand.com>
 ;;;
 ;;; Permission is hereby granted, free of charge, to any person
 ;;; obtaining a copy of this software and associated documentation
