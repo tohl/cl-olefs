@@ -1465,10 +1465,3 @@
             #+nil(write-byte (logand #x07 flags) s))
           (stream-position s (+ 26 o))
           (write-byte 0 s))))))
-
-;;(fix-numbering "/home/hlavaty/Shared/numbering/Layout_von_Gesamt.doc")
-;;(fix-numbering "/home/hlavaty/Shared/numbering/Layout_von_Gesamt.doc.fixed.doc")
-
-;;(fix-numbering "/home/hlavaty/Shared/numbering/AG-Satzung.doc")
-;;(fix-numbering "/home/hlavaty/Shared/numbering/AG-Satzung-BB.doc")
-;;(fix-numbering "/home/hlavaty/Shared/numbering/tilo-testet-layoutvorlagen.doc")
