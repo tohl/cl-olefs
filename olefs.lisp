@@ -357,11 +357,24 @@
 (defun ole-directory-stream (ole-file)
   (funcall ole-file 'ole-directory-stream))
 
-(defun traverse-directories (ole-file fn) ;; TODO better (streaming) interface
-  (let (e (s (ole-directory-stream ole-file)))
-    (loop
-       while (setq e (funcall s))
-       do (funcall fn e))))
+(defun find-ole-entry (ole-file &key name type)
+  (loop
+     with s = (ole-directory-stream ole-file)
+     with e = nil
+     while (setq e (funcall s))
+     do (when (and (or (not type)
+                       (let ((x (ole-entry.object-type e)))
+                         (if (atom type)
+                             (eql x type)
+                             (member x type))))
+                   (or (not name)
+                       (let ((x (ole-entry-name-to-string
+                                 (ole-entry.name e)
+                                 (ole-entry.name-length e))))
+                         (if (atom name)
+                             (equal x name)
+                             (member x name :test #'equal)))))
+          (return-from find-ole-entry e))))
 
 (defun %ole-directory-stream (directories)
   (let ((pending (list (cons 0 0))))
@@ -412,45 +425,28 @@
         (ole-directory-stream (%ole-directory-stream directories))))))
 
 (defun extract-pictures (ole-file dir html)
-  (traverse-directories
+  (walk-RecordHeader-tree
    ole-file
-   (lambda (entry)
-     (case (ole-entry.object-type entry)
-       (2 ;; stream
-        (let ((entry-name (ole-entry-name-to-string
-                           (ole-entry.name entry)
-                           (ole-entry.name-length entry))))
-          #+nil
-          (with-stream (in (ole-entry-stream ole-file entry))
-            (with-open-file (out (format nil "~a/~a" dir entry-name)
+   (find-ole-entry ole-file :name "Pictures" :type 2)
+   (lambda (in level i h start end parents)
+     (declare (ignore level start end parents))
+     (multiple-value-bind (blip kind)
+         (read-record-body
+          in
+          h
+          (lambda (blip in)
+            (with-open-file (out (format nil "~a/~d.~a"
+                                         dir
+                                         i
+                                         (blip-ext blip))
                                  :direction :output
                                  :if-does-not-exist :create
                                  :if-exists :supersede
                                  :element-type '(unsigned-byte 8))
-              (copy-stream in out)))
-          (when (equal "Pictures" entry-name)
-            (walk-RecordHeader-tree
-             ole-file
-             entry
-             (lambda (in level i h start end parents)
-               (declare (ignore level start end parents))
-               (multiple-value-bind (blip kind)
-                   (read-record-body
-                    in
-                    h
-                    (lambda (blip in)
-                      (with-open-file (out (format nil "~a/~d.~a"
-                                                   dir
-                                                   i
-                                                   (blip-ext blip))
-                                           :direction :output
-                                           :if-does-not-exist :create
-                                           :if-exists :supersede
-                                           :element-type '(unsigned-byte 8))
-                        (copy-stream in out))))
-                 (declare (ignore blip))
-                 (when html
-                   (format html "<p><img src=\"~d.~(~a~)\">~%" i kind))))))))))))
+              (copy-stream in out))))
+       (declare (ignore blip))
+       (when html
+         (format html "<p><img src=\"~d.~(~a~)\">~%" i kind))))))
 
 (defun extract-ole-file (filename &optional (dir "/tmp")) ;; TODO extract audio files
   (with-stream (ole-file (ole-file-stream filename))
@@ -646,16 +642,9 @@
 
 (defun print-RecordHeader-tree-from-ppt-file (filename)
   (with-stream (ole-file (ole-file-stream filename))
-    (traverse-directories
+    (print-RecordHeader-tree
      ole-file
-     (lambda (entry)
-       (case (ole-entry.object-type entry)
-         (2 ;; stream
-          (let ((entry-name (ole-entry-name-to-string
-                             (ole-entry.name entry)
-                             (ole-entry.name-length entry))))
-            (when (equal "PowerPoint Document" entry-name)
-              (print-RecordHeader-tree ole-file entry)))))))))
+     (find-ole-entry ole-file :name "PowerPoint Document" :type 2))))
 
 (defun utf-char (n)                ;; TODO utf properly
   (if (member n '(#x0a #x0b #x0d)) ;; #x0b = vertical tab
@@ -834,22 +823,12 @@
       ;;(out "~s~%" texts)
       (out "</body>~%</html>~%"))))
 
-(defun find-ole-entry (ole-file name)
-  (traverse-directories
-   ole-file
-   (lambda (entry)
-     (let ((entry-name (ole-entry-name-to-string
-                        (ole-entry.name entry)
-                        (ole-entry.name-length entry))))
-       (when (equal name entry-name)
-         (return-from find-ole-entry entry))))))
-
 (defun ppt-file-to-html-naive (filename &optional (stream *standard-output*))
   (with-stream (ole-file (ole-file-stream filename))
     (let ((pictures nil))
       ;;(extract-pictures ole-file dir html) ;; TODO mount olefs and traverse Pictures only once
       (walk-RecordHeader-tree ole-file
-                              (find-ole-entry ole-file "Pictures")
+                              (find-ole-entry ole-file :name "Pictures" :type 2)
                               (lambda (in level i h start end parents)
                                 (declare (ignore level end parents))
                                 (multiple-value-bind (blip kind)
@@ -857,7 +836,9 @@
                                   (declare (ignore blip))
                                   (push (list i (- start 8) kind) pictures))))
       (ppt-entry-to-html-naive ole-file
-                               (find-ole-entry ole-file "PowerPoint Document")
+                               (find-ole-entry ole-file
+                                               :name "PowerPoint Document"
+                                               :type 2)
                                stream
                                filename
                                pictures
@@ -924,27 +905,20 @@
 (defun ppt-file-to-html (filename &optional (stream *standard-output*))
   (with-stream (ole-file (ole-file-stream filename))
     (let ((u (block CurrentUser
-               (traverse-directories
+               (walk-RecordHeader-tree
                 ole-file
-                (lambda (entry)
-                  (case (ole-entry.object-type entry)
-                    (2 ;; stream
-                     (let ((entry-name (ole-entry-name-to-string
-                                        (ole-entry.name entry)
-                                        (ole-entry.name-length entry))))
-                       (when (equal "Current User" entry-name)
-                         (walk-RecordHeader-tree
-                          ole-file
-                          entry
-                          (lambda (in level i h start end parents)
-                            (declare (ignore level i start end parents))
-                            (return-from CurrentUser
-                              (cadr (read-record-body in h))))))))))))))
+                (find-ole-entry ole-file :name "Current User" :type 2)
+                (lambda (in level i h start end parents)
+                  (declare (ignore level i start end parents))
+                  (return-from CurrentUser
+                    (cadr (read-record-body in h))))))))
       ;;(describe u)
       (let ((pictures nil))
         ;;(extract-pictures ole-file dir html) ;; TODO mount olefs and traverse Pictures only once
         (walk-RecordHeader-tree ole-file
-                                (find-ole-entry ole-file "Pictures")
+                                (find-ole-entry ole-file
+                                                :name "Pictures"
+                                                :type 2)
                                 (lambda (in level i h start end parents)
                                   (declare (ignore level end parents))
                                   (multiple-value-bind (blip kind)
@@ -954,7 +928,9 @@
         (print (list :pictures pictures))
         (with-stream (in (ole-entry-stream
                           ole-file
-                          (find-ole-entry ole-file "PowerPoint Document")))
+                          (find-ole-entry ole-file
+                                          :name "PowerPoint Document"
+                                          :type 2)))
           (let ((htab (make-hash-table)) ;; persist oid -> fpos
                 (first-UserEditAtom nil))
             (stream-position in (CurrentUserAtom.offsetToCurrentEdit u))
@@ -1388,72 +1364,57 @@
     (with-stream (ole-file (ole-file-stream filename))
       #+nil(break "~s" ole-file)
       (let (fcPlfLst lcbPlfLst)
-        (block found1
-          (traverse-directories
-           ole-file
-           (lambda (entry)
-             (case (ole-entry.object-type entry)
-               (2 ;; stream
-                (let ((entry-name (ole-entry-name-to-string
-                                   (ole-entry.name entry)
-                                   (ole-entry.name-length entry))))
-                  (when (equal "WordDocument" entry-name)
-                    (with-stream (in (ole-entry-stream ole-file entry))
-                      (let ((fib (read-fib in)))
-                        ;;(describe fib)
-                        (let ((x (fib-fibRgFcLcb fib)))
-                          (setq fcPlfLst (FibRgFcLcb97.fcPlfLst x)
-                                lcbPlfLst (FibRgFcLcb97.lcbPlfLst x)))
-                        (return-from found1)
-                        #+nil
-                        (multiple-value-bind (fcPlfLst lcbPlfLst)
-                            (with-stream (s (vector-stream (subseq (fib-fibRgFcLcbBlob fib) #.(* 4 146))))
-                              (values (read-dword s) (read-dword s)))
-                          (print (list :@@@ fcPlfLst lcbPlfLst))
-                          ))))))))))
-        (block found2
-          (traverse-directories
-           ole-file
-           (lambda (entry)
-             (case (ole-entry.object-type entry)
-               (2 ;; stream
-                (let ((entry-name (ole-entry-name-to-string
-                                   (ole-entry.name entry)
-                                   (ole-entry.name-length entry))))
-                  (when (or (equal "0Table" entry-name) ;; TODO be sure which one?
-                            (equal "1Table" entry-name))
-                    (with-stream (in (ole-entry-stream ole-file entry))
-                      (stream-position in fcPlfLst)
-                      (let ((PlfLst (read-PlfLst in)))
-                        (let ((n 0))
-                          (dotimes (i (length PlfLst))
-                            (incf n (if (LSTF.fSimpleList (aref PlfLst i)) 1 9)))
-                          (let ((lvls (make-array n)))
-                            (dotimes (i n)
-                              (setf (aref lvls i) (read-lvl in)))
-                            ;; now I have lstf[] and lvl[]
-                            (let (anums ;; roughly like w:abstractNum
-                                  (j 0))
-                              (dotimes (i (length PlfLst))
-                                (let ((lstf (aref PlfLst i)))
-                                  (unless (LSTF.fSimpleList lstf)
-                                    (push (list i #+nil lstf j) anums))
-                                  (incf j (if (LSTF.fSimpleList lstf) 1 9))))
-                              (setq anums (nreverse anums))
-                              ;;(print anums)
-                              (dolist (a anums)
-                                (destructuring-bind (i j) a ;; i_lstf j_lvl0
-                                  (declare (ignore i))
-                                  (let* ((lvl (aref lvls (1+ j))) ;; hardcode second level
-                                         (lvlf (LVL-lvlf lvl)))
-                                    ;;(print (list :@@@ j (LVLF.fNoRestart lvlf) (LVLF.ilvlRestartLim lvlf)))
-                                    (push (LVLF.%physical-stream-position lvlf) offsets)))))
-                            #+nil
-                            (dotimes (i n)
-                              (let* ((lvl (aref lvls i))
-                                     (lvlf (LVL-lvlf lvl)))
-                                (print (list :@@@ i (LVLF.fNoRestart lvlf) (LVLF.ilvlRestartLim lvlf)))))))))
-                    (return-from found2))))))))
+        (with-stream (in (ole-entry-stream
+                          ole-file
+                          (find-ole-entry ole-file
+                                          :name "WordDocument"
+                                          :type 2)))
+          (let ((fib (read-fib in)))
+            ;;(describe fib)
+            (let ((x (fib-fibRgFcLcb fib)))
+              (setq fcPlfLst (FibRgFcLcb97.fcPlfLst x)
+                    lcbPlfLst (FibRgFcLcb97.lcbPlfLst x)))
+            #+nil
+            (multiple-value-bind (fcPlfLst lcbPlfLst)
+                (with-stream (s (vector-stream (subseq (fib-fibRgFcLcbBlob fib) #.(* 4 146))))
+                  (values (read-dword s) (read-dword s)))
+              (print (list :@@@ fcPlfLst lcbPlfLst))
+              )))
+        (with-stream (in (ole-entry-stream
+                          ole-file
+                          (find-ole-entry ole-file
+                                          :name '("0Table" "1Table") ;; TODO be sure which one?
+                                          :type 2)))
+          (stream-position in fcPlfLst)
+          (let ((PlfLst (read-PlfLst in)))
+            (let ((n 0))
+              (dotimes (i (length PlfLst))
+                (incf n (if (LSTF.fSimpleList (aref PlfLst i)) 1 9)))
+              (let ((lvls (make-array n)))
+                (dotimes (i n)
+                  (setf (aref lvls i) (read-lvl in)))
+                ;; now I have lstf[] and lvl[]
+                (let (anums ;; roughly like w:abstractNum
+                      (j 0))
+                  (dotimes (i (length PlfLst))
+                    (let ((lstf (aref PlfLst i)))
+                      (unless (LSTF.fSimpleList lstf)
+                        (push (list i #+nil lstf j) anums))
+                      (incf j (if (LSTF.fSimpleList lstf) 1 9))))
+                  (setq anums (nreverse anums))
+                  ;;(print anums)
+                  (dolist (a anums)
+                    (destructuring-bind (i j) a ;; i_lstf j_lvl0
+                      (declare (ignore i))
+                      (let* ((lvl (aref lvls (1+ j))) ;; hardcode second level
+                             (lvlf (LVL-lvlf lvl)))
+                        ;;(print (list :@@@ j (LVLF.fNoRestart lvlf) (LVLF.ilvlRestartLim lvlf)))
+                        (push (LVLF.%physical-stream-position lvlf) offsets)))))
+                #+nil
+                (dotimes (i n)
+                  (let* ((lvl (aref lvls i))
+                         (lvlf (LVL-lvlf lvl)))
+                    (print (list :@@@ i (LVLF.fNoRestart lvlf) (LVLF.ilvlRestartLim lvlf)))))))))
         #+nil(values fcPlfLst lcbPlfLst)))
     (let ((fixed (format nil "~a.fixed.doc" filename)))
       (copy-file filename fixed)
