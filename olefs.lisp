@@ -1506,15 +1506,13 @@
 
 (define-structure BIFF-RkNumber ()
   (%dummy dword)
-  (percent t :compute (not (zerop (logand #x80000000 %dummy))))
-  (signed t :compute (not (zerop (logand #x40000000 %dummy))))
-  (value t :compute (if signed
-                        (let* ((x (logand #x1fffffff))
-                               (y (if (zerop (logand #x20000000))
-                                      x
-                                      x #+nil (- (1+ (lognot x)))))) ;; TODO!!!
-                          (if percent (/ y 100) y))
-                        %dummy #+nil(error "TODO partial double")))) ;; TODO!!!
+  (percent t :compute (not (zerop (logand 1 %dummy))))
+  (signed t :compute (not (zerop (logand 2 %dummy))))
+  (value t :compute (let ((y (if signed
+                                 (error "TODO") ;;(ash x -2)
+                                 (ccl::double-float-from-bits ;; TODO not ccl specific
+                                  (logand #xfffffffc %dummy) 0))))
+                      (if percent (/ y 100) y))))
 
 (define-structure BIFF-RkRec ()
   (ixfe ushort)
