@@ -68,6 +68,7 @@
       (ecase msg
         (close (setq stream nil))
         (stream-position offset)
+        (physical-stream-position (physical-stream-position stream))
         (read-octet
          (unless (< offset size)
            (error 'end-of-file))
@@ -189,9 +190,33 @@
   (starting-sector-location dword)
   (stream-size ulonglong))
 
-(defun ole-entry-name-to-string (name length)
-  (coerce (mapcar #'code-char (coerce (subseq name 0 (1- (/ length 2))) 'list))
-          'string))
+(defun string-from-achars (achars &optional length) ;; TODO encoding?
+  (let* ((n (or length (length achars)))
+         (s (make-string n)))
+    (dotimes (i n s)
+      (setf (aref s i) (code-char (aref achars i))))))
+
+(defun string-from-wchars (wchars &optional length) ;; TODO encoding?
+  (let* ((n (or length (length wchars)))
+         (s (make-string n)))
+    (dotimes (i n s)
+      (setf (aref s i) (code-char (aref wchars i))))))
+
+(defun string-from-octets (octets fHighByte &optional nbytes) ;; TODO encoding?
+  (if fHighByte
+      (multiple-value-bind (n m) (floor (or nbytes (length octets)) 2)
+        (assert (zerop m))
+        (let ((s (make-string n)))
+          (dotimes (i n s)
+            (setf (aref s i) (code-char (let ((2*i (ash i 1)))
+                                          (+ (aref octets 2*i)
+                                             (ash (aref octets (1+ 2*i)) 8))))))))
+      (string-from-achars octets nbytes)))
+
+(defun ole-entry-name-to-string (octets n)
+  (multiple-value-bind (n m) (floor n 2)
+    (assert (zerop m))
+    (string-from-achars octets (1- n)))) ;; minus #\null
 
 (defun print-ole-entry (ole-entry stream)
   (print-unreadable-object (ole-entry stream :type t :identity t)
@@ -510,7 +535,7 @@
 
 (defstruct PersistDirectoryAtom header entries)
 
-(defun read-record-body (stream RecordHeader &optional fn)
+(defun read-record-body (stream RecordHeader &optional fn) ;; TODO move up?!
   (let ((x RecordHeader #+nil(read-RecordHeader stream)))
     (with-slots (recVer recInstance recType recLen) x
       (flet ((blip (ext guid2 &optional metafileHeader)
@@ -1432,3 +1457,256 @@
             #+nil(write-byte (logand #x07 flags) s))
           (stream-position s (+ 26 o))
           (write-byte 0 s))))))
+
+(defun extract-files (filename &optional (dir "/tmp"))
+  (with-stream (ole-file (ole-file-stream filename))
+    (do ((s (ole-directory-stream ole-file))
+         e
+         (i 0))
+        ((not (setq e (funcall s))))
+      (print-ole-entry e *standard-output*)
+      (terpri)
+      (ecase (ole-entry.object-type e)
+        ((0 1 5))
+        (2 (with-stream (in (ole-entry-stream ole-file e))
+             (with-open-file (out (format nil "~a/XX-~d" dir (incf i))
+                                  :direction :output
+                                  :if-does-not-exist :create
+                                  :if-exists :supersede
+                                  :element-type '(unsigned-byte 8))
+               (copy-stream in out))))))))
+
+;;; MS-XLS Excel binary file
+
+(define-structure BIFFRecordHeader ()
+  (tag ushort)
+  (length ushort))
+
+(define-structure BIFF-ShortXLUnicodeString ()
+  (cch ubyte)
+  (%dummy ubyte :member '(0 1))
+  (fHighByte t :compute (not (zerop (logand #x80 %dummy))))
+  (reserved1 t :compute (assert (zerop (logand #x7f %dummy))))
+  (rgb (ubyte (if fHighByte (* 2 cch) cch)))
+  (decoded t :compute (string-from-octets rgb fHighByte)))
+
+(define-structure BIFF-BoundSheet8 ()
+  (lbPlyPos dword)
+  (hsState ubyte :member '(0 1 2))
+  (dt ubyte :member '(0 1 2 6))
+  (stName BIFF-ShortXLUnicodeString))
+
+(define-structure BIFF-Cell ()
+  (rw ushort)
+  (col ushort)
+  (ixfe ushort))
+
+(define-structure BIFF-Blank ()
+  (cell DIFF-Cell))
+
+(define-structure BIFF-RkNumber ()
+  (%dummy dword)
+  (percent t :compute (not (zerop (logand #x80000000 %dummy))))
+  (signed t :compute (not (zerop (logand #x40000000 %dummy))))
+  (value t :compute (if signed
+                        (let* ((x (logand #x1fffffff))
+                               (y (if (zerop (logand #x20000000))
+                                      x
+                                      x #+nil (- (1+ (lognot x)))))) ;; TODO!!!
+                          (if percent (/ y 100) y))
+                        %dummy #+nil(error "TODO partial double")))) ;; TODO!!!
+
+(define-structure BIFF-RkRec ()
+  (ixfe ushort)
+  (rk BIFF-RkNumber))
+
+(define-structure BIFF-RK ()
+  (rw ushort)
+  (col ushort)
+  (rkRec BIFF-RkRec))
+
+(define-structure BIFF-Bes ()
+  (bBoolErr ubyte)
+  (fError ubyte :member '(0 1))
+  (decoded t :compute (if (zerop fError)
+                          (ecase bBoolErr
+                            (0 nil)
+                            (1 t))
+                          (ecase fError
+                            (0 :#NULL!)
+                            (7 :#DIV/0!)
+                            (#xf :#VALUE!)
+                            (#x17 :#REF!)
+                            (#x1d :#NAME!)
+                            (#x24 :#NUM!)
+                            (#x2a :#N/A)
+                            (#x2b :#GETTING_DATA)))))
+
+(define-structure BIFF-BoolErr ()
+  (cell BIFF-Cell)
+  (bes BIFF-Bes))
+
+(define-structure BIFF-Number ()
+  (cell BIFF-Cell)
+  (num ulonglong)) ;; TODO double
+
+(define-structure BIFF-LabelSst ()
+  (cell BIFF-Cell)
+  (isst dword))
+
+(define-structure BIFF-FormulaValue () ;; TODO
+  (byte1 ubyte)
+  (byte2 ubyte)
+  (byte3 ubyte)
+  (byte4 ubyte)
+  (byte5 ubyte)
+  (byte6 ubyte)
+  (fExprO ushort))
+
+#+nil
+(define-structure BIFF-CellParsedFormula () ;; TODO
+  (cce ushort)
+  (rgce (ubyte cce))
+  (rgcb BIFF-RgbExtra))
+
+#+nil
+(define-structure BIFF-Formula () ;; TODO
+  (cell BIFF-Cell)
+  (val BIFF-FormulaValue)
+  (%dummy ushort)
+  (fAlwaysCalc t :compute (not (zerop (logand #x8000))))
+  (reserved1 t :compute (assert (zerop (logand #x4000))))
+  (fFill t :compute (not (zerop (logand #x2000))))
+  (fShrFmla t :compute (not (zerop (logand #x1000))))
+  (reserved2 t :compute (assert (zerop (logand #x800))))
+  (fClearErrors t :compute (not (zerop (logand #x400))))
+  (reserved3 t :compute (assert (zerop (logand #x3ff))))
+  (chn dword)
+  (formula BIFF-CellParsedFormula))
+
+#+nil
+(define-structure BIFF-MulBlank () ;; TODO
+  (rw ushort)
+  (colFirst ushort))
+
+(define-structure BIFF-FormatRun ()
+  (ich ushort)
+  (ifnt ushort))
+
+(define-structure BIFF-LPWideString ()
+  (cchCharacters ushort)
+  (rgchData (wchar cchCharacters))
+  (decoded t :compute (string-from-wchars rgchData)))
+
+(define-structure BIFF-RPHSSub ()
+  (crun ushort)
+  (cch ushort)
+  (st BIFF-LPWideString))
+
+(define-structure BIFF-ExtRst ()
+  (reserved ushort)
+  (cb ushort)
+  (phs dword)
+  (rphssub BIFF-RPHSSub)
+  (rgphruns (PhRuns (BIFF-RPHSSub.crun rphssub))))
+
+(define-structure BIFF-XLUnicodeRichExtendedString ()
+  (cch ushort)
+  (%dummy ubyte)
+  (fHighByte t :compute (not (zerop (logand #x80 %dummy))))
+  (reserved1 t :compute (assert (zerop (logand #x40 %dummy))))
+  (fExtSt t :compute (not (zerop (logand #x20 %dummy))))
+  (fRichSt t :compute (not (zerop (logand #x10 %dummy))))
+  (reserved2 t :compute (assert (zerop (logand #xf %dummy))))
+  (cRun ushort :when fRichSt :default 0)
+  (cbExtRst dword :when fExtSt :default 0)
+  (rgb (ubyte (if fHighByte (* 2 cch) cch)))
+  (rgRun (BIFF-FormatRun cRun) :when fRichSt :default #())
+  (ExtRst (BIFF-ExtRst cbExtRst) :when fExtSt :default #())
+  (decoded t :compute (string-from-octets rgb fHighByte)))
+
+(define-structure BIFF-SST ()
+  (cstTotal dword)
+  (cstUnique dword)
+  (rgb (BIFF-XLUnicodeRichExtendedString cstUnique)))
+
+(define-structure BIFF-DefColWidth ()
+  (cchdefColWidth ushort))
+
+(define-structure BIFF-Index ()
+  (reserved dword :always 0)
+  (rwMic dword)
+  (rwMac dword)
+  (ibXF dword)
+  (rgibRw (dword 1)))
+
+(defun biff-substream (ole-entry-stream)
+  (let ((in ole-entry-stream)
+        end
+        eof)
+    (flet ((header ()
+             (let* ((h (read-BIFFRecordHeader in))
+                    (nbytes (BIFFRecordHeader.length h)))
+               (setq end (+ (stream-position in) nbytes))
+               (values (BIFFRecordHeader.tag h)
+                       (shorter-stream in nbytes)))))
+      (assert (member (header) '(#x0009 #x0209 #x0409 #x0809))) ;; bof
+      (lambda ()
+        (assert (not eof))
+        (stream-position in end)
+        (multiple-value-bind (tag s) (header)
+          (case tag ;; TODO more cell types
+            (#x000a (not (setq eof t)))
+            ;;(#x000b :index1)
+            (#x0085 (read-BIFF-BoundSheet8 s))
+            (#x00fc (read-BIFF-SST s))
+            (#x00fd (read-BIFF-LabelSst s))
+            ;;(#x020b (read-BIFF-Index s))
+            (#x027e (read-BIFF-Rk s))
+            (t tag)))))))
+
+(defun princ-cell-value (x sst)
+  (typecase x
+    (BIFF-LabelSst
+     (let ((c (BIFF-LabelSst.cell x)))
+       `(:label ,(BIFF-Cell.rw c)
+                ,(BIFF-Cell.col c)
+                ,(BIFF-XLUnicodeRichExtendedString.decoded
+                  (aref (BIFF-SST.rgb sst) (BIFF-LabelSst.isst x))))))
+    (BIFF-RK
+     `(:number ,(BIFF-RK.rw x)
+               ,(BIFF-RK.col x)
+               ,(BIFF-RkNumber.value (BIFF-RkRec.rk (BIFF-RK.RkRec x)))))))
+
+(defun parse-sheet (BIFF-BoundSheet8 stream sst)
+  (stream-position stream (BIFF-BoundSheet8.lbPlyPos BIFF-BoundSheet8))
+  (do (z x (s (biff-substream stream)))
+      ((not (setq x (funcall s)))
+       (nreverse z))
+    (let ((v (princ-cell-value x sst)))
+      (when v
+        (push v z))))
+  #+nil
+  (let ((index (funcall (biff-substream stream))))
+    (etypecase index
+      (BIFF-Index index #+nil(BIFF-Index.rgibRw )))))
+
+(defun parse-xls-file (filename)
+  (with-stream (f (ole-file-stream filename))
+    (let ((e (find-ole-entry f :name "Workbook" :type 2)))
+      (when e
+        (with-stream (in (ole-entry-stream f e))
+          (let (sheets sst)
+            (do (x (globals (biff-substream in)))
+                ((not (setq x (funcall globals)))
+                 (setq sheets (nreverse sheets)))
+              (typecase x
+                (BIFF-BoundSheet8 (push x sheets))
+                (BIFF-SST (setq sst x))))
+            `(:workbook
+              ,@(loop
+                   for x in sheets
+                   collect `(:sheet
+                             ,(BIFF-ShortXLUnicodeString.decoded
+                               (BIFF-BoundSheet8.stName x))
+                             ,@(parse-sheet x in sst))))))))))

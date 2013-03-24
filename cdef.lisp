@@ -51,12 +51,13 @@
 
 ;;(slot-type-read #+nil 'dword #+nil '(byte 6) '(wchar 6))
 
-(defun slot-reader-let-definition (name type &key compute always member)
+(defun slot-reader-let-definition (name type &key compute always member when default)
   (list
    name
    (flet ((value ()
             (cond
               (compute compute)
+              (when `(if ,when ,(slot-type-read type) ,default))
               (t (slot-type-read type)))))
      (cond
        (always `(let ((x ,(value))) (assert (equal x ,always)) x))
