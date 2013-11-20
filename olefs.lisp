@@ -22,6 +22,15 @@
 
 (in-package :olefs)
 
+(defun double-float-from-bits (high low)
+  (declare (optimize (speed 3) (debug 0))
+           (type (unsigned-byte 32) high low))
+  (let ((bignum 0))
+    (declare (type (unsigned-byte 64) bignum))
+    (setf (ldb (byte 32  0) bignum) low
+          (ldb (byte 32 32) bignum) high)
+    (ieee-floats:decode-float64 bignum)))
+
 (defmacro with-stream ((var stream) &body body)
   `(let ((,var ,stream))
      (unwind-protect (progn ,@body)
@@ -1510,7 +1519,7 @@
   (signed t :compute (not (zerop (logand 2 %dummy))))
   (value t :compute (let ((y (if signed
                                  (error "TODO") ;;(ash x -2)
-                                 (ccl::double-float-from-bits ;; TODO not ccl specific
+                                 (double-float-from-bits
                                   (logand #xfffffffc %dummy) 0))))
                       (if percent (/ y 100) y))))
 
