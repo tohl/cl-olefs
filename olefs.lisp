@@ -25,6 +25,9 @@
 (defun double-float-from-bits (high low)
   (declare (optimize (speed 3) (debug 0))
            (type (unsigned-byte 32) high low))
+  #+ccl
+  (ccl::double-float-from-bits high low)
+  #-ccl
   (let ((bignum 0))
     (declare (type (unsigned-byte 64) bignum))
     (setf (ldb (byte 32  0) bignum) low

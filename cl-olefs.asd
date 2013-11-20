@@ -32,7 +32,7 @@
   :author "Tomas Hlavaty <tom@logand.com>"
   :maintainer "Tomas Hlavaty <tom@logand.com>"
   :licence "MIT"
-  :depends-on (:ieee-floats)
+  :depends-on (#-ccl :ieee-floats)
   :serial t
   :components ((:file "package")
                (:file "cdef")
