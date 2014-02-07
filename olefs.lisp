@@ -74,33 +74,37 @@
          do (write-sequence buf o :end n)))))
 
 (defun shorter-stream (stream size)
-  (let ((offset 0))
-    (lambda (msg)
-      (assert stream)
-      (ecase msg
-        (close (setq stream nil))
-        (stream-position offset)
-        (physical-stream-position (physical-stream-position stream))
-        (read-octet
-         (unless (< offset size)
-           (error 'end-of-file))
-         (incf offset)
-         (read-octet stream))))))
+  (let ((offset 0)
+        self)
+    (setq self
+          (lambda (msg)
+            (assert stream)
+            (ecase msg
+              (close (setq stream nil))
+              (stream-position offset)
+              (physical-stream-position (physical-stream-position stream))
+              (read-octet
+               (unless (< offset size)
+                 (error 'end-of-file :stream self))
+               (incf offset)
+               (read-octet stream)))))))
 
 (defun vector-stream (vector physical-stream-position)
   (let ((offset 0)
-        (size (length vector)))
-    (lambda (msg)
-      (assert vector)
-      (ecase msg
-        (close (setq vector nil))
-        (stream-position offset)
-        (physical-stream-position (+ offset physical-stream-position))
-        (read-octet
-         (unless (< offset size)
-           (error 'end-of-file))
-         (prog1 (aref vector offset)
-           (incf offset)))))))
+        (size (length vector))
+        self)
+    (setq self
+          (lambda (msg)
+            (assert vector)
+            (ecase msg
+              (close (setq vector nil))
+              (stream-position offset)
+              (physical-stream-position (+ offset physical-stream-position))
+              (read-octet
+               (unless (< offset size)
+                 (error 'end-of-file :stream self))
+               (prog1 (aref vector offset)
+                 (incf offset))))))))
 
 ;;; MS-CFB Compound File Binary File Format
 
@@ -351,42 +355,44 @@
                        (coerce x 'vector)))))
          sector
          (buffer (make-array 512 :element-type '(unsigned-byte 8)))
-         (size (ole-entry.stream-size ole-entry)))
-    (lambda (msg &rest args)
-      (assert stream)
-      (flet ((next-octet (consumep)
-               ;; (values <current-byte> <position-of-current-byte>)
-               ;; Advance the stream by a byte if CONSUMEP is true, except at eof.
-               (assert (not (minusp offset)))
-               (unless (< offset size)
-                 (error 'end-of-file))
-               (flet ((pick (q i)
-                        (unless (eql sector q)
-                          (seek-sector (aref chain q) stream)
-                          (let ((n (read-sequence buffer stream)))
-                            (assert (eql 512 n)))
-                          (setq sector q))
-                        (multiple-value-prog1
-                            (values (aref buffer i)
-                                    (+ i (location-position (aref chain sector))))
-                          (when consumep
-                            (incf offset)))))
-                 (if mchain
-                     (multiple-value-bind (mq mr) (floor offset 64)
-                       (multiple-value-bind (q r) (floor (aref mchain mq) (/ 512 64))
-                         (pick q (+ (* r 64) mr))))
-                     (multiple-value-bind (q r) (floor offset 512)
-                       (pick q r))))))
-        (ecase msg
-          (close (setq stream nil))
-          (stream-position
-           (destructuring-bind (&optional newpos) args
-             (if newpos
-                 (setf offset newpos
-                       sector nil)
-                 offset)))
-          (physical-stream-position (nth-value 1 (next-octet nil)))
-          (read-octet (values (next-octet t))))))))
+         (size (ole-entry.stream-size ole-entry))
+         self)
+    (setq self
+          (lambda (msg &rest args)
+            (assert stream)
+            (flet ((next-octet (consumep)
+                     ;; (values <current-byte> <position-of-current-byte>)
+                     ;; Advance the stream by a byte if CONSUMEP is true, except at eof.
+                     (assert (not (minusp offset)))
+                     (unless (< offset size)
+                       (error 'end-of-file :stream self))
+                     (flet ((pick (q i)
+                              (unless (eql sector q)
+                                (seek-sector (aref chain q) stream)
+                                (let ((n (read-sequence buffer stream)))
+                                  (assert (eql 512 n)))
+                                (setq sector q))
+                              (multiple-value-prog1
+                                  (values (aref buffer i)
+                                          (+ i (location-position (aref chain sector))))
+                                (when consumep
+                                  (incf offset)))))
+                       (if mchain
+                           (multiple-value-bind (mq mr) (floor offset 64)
+                             (multiple-value-bind (q r) (floor (aref mchain mq) (/ 512 64))
+                               (pick q (+ (* r 64) mr))))
+                           (multiple-value-bind (q r) (floor offset 512)
+                             (pick q r))))))
+              (ecase msg
+                (close (setq stream nil))
+                (stream-position
+                 (destructuring-bind (&optional newpos) args
+                   (if newpos
+                       (setf offset newpos
+                             sector nil)
+                       offset)))
+                (physical-stream-position (nth-value 1 (next-octet nil)))
+                (read-octet (values (next-octet t)))))))))
 
 (defun ole-entry-stream (ole-file entry)
   (funcall ole-file 'ole-entry-stream entry))
