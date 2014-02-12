@@ -1503,8 +1503,8 @@
 (define-structure BIFF-ShortXLUnicodeString ()
   (cch ubyte)
   (%dummy ubyte :member '(0 1))
-  (fHighByte t :compute (not (zerop (logand #x80 %dummy))))
-  (reserved1 t :compute (assert (zerop (logand #x7f %dummy))))
+  (fHighByte t :compute (not (zerop (logand 1 %dummy))))
+  (reserved1 t :compute (assert (zerop (logand #xfe %dummy))))
   (rgb (ubyte (if fHighByte (* 2 cch) cch)))
   (decoded t :compute (string-from-octets rgb fHighByte)))
 
@@ -1586,7 +1586,7 @@
   (rgcb BIFF-RgbExtra))
 
 #+nil
-(define-structure BIFF-Formula () ;; TODO
+(define-structure BIFF-Formula () ;; TODO also probably wrong bit fiddling
   (cell BIFF-Cell)
   (val BIFF-FormulaValue)
   (%dummy ushort)
@@ -1631,11 +1631,11 @@
 (define-structure BIFF-XLUnicodeRichExtendedString ()
   (cch ushort)
   (%dummy ubyte)
-  (fHighByte t :compute (not (zerop (setq *reading-unicode-string* (logand #x80 %dummy)))))
-  (reserved1 t :compute (assert (zerop (logand #x40 %dummy))))
-  (fExtSt t :compute (not (zerop (logand #x20 %dummy))))
-  (fRichSt t :compute (not (zerop (logand #x10 %dummy))))
-  (reserved2 t :compute (assert (zerop (logand #xf %dummy))))
+  (fHighByte t :compute (not (zerop (setq *reading-unicode-string* (logand 1 %dummy)))))
+  (reserved1 t :compute (assert (zerop (logand 2 %dummy))))
+  (fExtSt t :compute (not (zerop (logand 4 %dummy))))
+  (fRichSt t :compute (not (zerop (logand 8 %dummy))))
+  (reserved2 t :compute (assert (zerop (logand #xf0 %dummy))))
   (cRun ushort :when fRichSt :default 0)
   (cbExtRst dword :when fExtSt :default 0)
   (rgb (ubyte (if fHighByte (* 2 cch) cch)))
