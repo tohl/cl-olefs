@@ -1626,10 +1626,12 @@
   (rphssub BIFF-RPHSSub)
   (rgphruns (PhRuns (BIFF-RPHSSub.crun rphssub))))
 
+(defvar *reading-unicode-string*)
+
 (define-structure BIFF-XLUnicodeRichExtendedString ()
   (cch ushort)
   (%dummy ubyte)
-  (fHighByte t :compute (not (zerop (logand #x80 %dummy))))
+  (fHighByte t :compute (not (zerop (setq *reading-unicode-string* (logand #x80 %dummy)))))
   (reserved1 t :compute (assert (zerop (logand #x40 %dummy))))
   (fExtSt t :compute (not (zerop (logand #x20 %dummy))))
   (fRichSt t :compute (not (zerop (logand #x10 %dummy))))
@@ -1656,6 +1658,29 @@
   (ibXF dword)
   (rgibRw (dword 1)))
 
+(defun biff-continue-stream (stream size)
+  ;; like SHORTER-STREAM but makes continue records transparent
+  (let ((offset 0)
+        self)
+    (setq self
+          (lambda (msg)
+            (assert stream)
+            (ecase msg
+              (close (setq stream nil))
+              (stream-position offset)
+              (physical-stream-position (physical-stream-position stream))
+              (read-octet
+               (unless (< offset size)
+                 (if (eql #x3c (read-ushort stream)) ;; continue record
+                     (let ((n (read-ushort stream))) ;; 2080 biff2-5, 8224 biff8
+                       (assert (member n '(2080 8224)))
+                       (incf size n)
+                       (when *reading-unicode-string*
+                         (assert (equal *reading-unicode-string* (read-octet stream))))) ;; TODO can change
+                     (error 'end-of-file :stream self)))
+               (incf offset)
+               (read-octet stream)))))))
+
 (defun biff-substream (ole-entry-stream)
   (let ((in ole-entry-stream)
         end
@@ -1665,7 +1690,7 @@
                     (nbytes (BIFFRecordHeader.length h)))
                (setq end (+ (stream-position in) nbytes))
                (values (BIFFRecordHeader.tag h)
-                       (shorter-stream in nbytes)))))
+                       (biff-continue-stream in nbytes)))))
       (assert (member (header) '(#x0009 #x0209 #x0409 #x0809))) ;; bof
       (lambda ()
         (assert (not eof))
@@ -1675,7 +1700,7 @@
             (#x000a (not (setq eof t)))
             ;;(#x000b :index1)
             (#x0085 (read-BIFF-BoundSheet8 s))
-            (#x00fc (read-BIFF-SST s))
+            (#x00fc (let (*reading-unicode-string*) (read-BIFF-SST s)))
             (#x00fd (read-BIFF-LabelSst s))
             ;;(#x020b (read-BIFF-Index s))
             (#x027e (read-BIFF-Rk s))
