@@ -210,13 +210,17 @@
   (let* ((n (or length (length achars)))
          (s (make-string n)))
     (dotimes (i n s)
-      (setf (aref s i) (code-char (aref achars i))))))
+      (let ((c (aref achars i)))
+        (assert (plusp c))
+        (setf (aref s i) (code-char c))))))
 
 (defun string-from-wchars (wchars &optional length) ;; TODO encoding?
   (let* ((n (or length (length wchars)))
          (s (make-string n)))
     (dotimes (i n s)
-      (setf (aref s i) (code-char (aref wchars i))))))
+      (let ((c (aref wchars i)))
+        (assert (plusp c))
+        (setf (aref s i) (code-char c))))))
 
 (defun string-from-octets (octets fHighByte &optional nbytes) ;; TODO encoding?
   (if fHighByte
@@ -224,9 +228,11 @@
         (assert (zerop m))
         (let ((s (make-string n)))
           (dotimes (i n s)
-            (setf (aref s i) (code-char (let ((2*i (ash i 1)))
-                                          (+ (aref octets 2*i)
-                                             (ash (aref octets (1+ 2*i)) 8))))))))
+            (let ((c (let ((2*i (ash i 1)))
+                       (+ (aref octets 2*i)
+                          (ash (aref octets (1+ 2*i)) 8)))))
+              (assert (plusp c))
+              (setf (aref s i) (code-char c))))))
       (string-from-achars octets nbytes)))
 
 (defun ole-entry-name-to-string (octets n)
@@ -690,11 +696,13 @@
      (find-ole-entry ole-file :name "PowerPoint Document" :type 2))))
 
 (defun utf-char (n)                ;; TODO utf properly
+  (assert (plusp n))
   (if (member n '(#x0a #x0b #x0d)) ;; #x0b = vertical tab
       "<br/>"
       (code-char n)))
 
 (defun ascii-char (n)
+  (assert (plusp n))
   (if (member n '(#x0a #x0b #x0d)) ;; #x0b = vertical tab
       "<br/>"
       (code-char n)))
