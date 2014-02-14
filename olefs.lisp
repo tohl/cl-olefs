@@ -1679,13 +1679,15 @@
               (physical-stream-position (physical-stream-position stream))
               (read-octet
                (unless (< offset size)
-                 (if (eql #x3c (read-ushort stream)) ;; continue record
-                     (let ((n (read-ushort stream))) ;; 2080 biff2-5, 8224 biff8
-                       (assert (member n '(2080 8224)))
-                       (incf size n)
-                       (when *reading-unicode-string*
-                         (assert (equal *reading-unicode-string* (read-octet stream))))) ;; TODO can change
-                     (error 'end-of-file :stream self)))
+                 (when (eql #x3c (read-ushort stream)) ;; continue record
+                   (let ((n (read-ushort stream)))
+                     (assert (< 0 n 8225)) ;; TODO biff8 or 2081 biff2-5
+                     (incf size n)
+                     (when *reading-unicode-string*
+                       (assert (equal *reading-unicode-string* (read-octet stream))) ;; TODO can change
+                       (decf size)))))
+               (unless (< offset size)
+                 (error 'end-of-file :stream self))
                (incf offset)
                (read-octet stream)))))))
 
