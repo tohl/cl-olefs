@@ -27,7 +27,9 @@
            (type (unsigned-byte 32) high low))
   #+ccl
   (ccl::double-float-from-bits high low)
-  #-ccl
+  #+sbcl
+  (sb-kernel:make-double-float high low)
+  #-(or ccl sbcl)
   (let ((bignum 0))
     (declare (type (unsigned-byte 64) bignum))
     (setf (ldb (byte 32  0) bignum) low
