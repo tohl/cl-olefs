@@ -28,7 +28,7 @@
   #+ccl
   (ccl::double-float-from-bits high low)
   #+sbcl
-  (sb-kernel:make-double-float high low)
+  (sb-kernel:make-double-float (sb-c::mask-signed-field 32 high) low)
   #-(or ccl sbcl)
   (let ((bignum 0))
     (declare (type (unsigned-byte 64) bignum))
