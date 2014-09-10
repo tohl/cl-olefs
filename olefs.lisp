@@ -1636,22 +1636,36 @@
   (rphssub BIFF-RPHSSub)
   (rgphruns (PhRuns (BIFF-RPHSSub.crun rphssub))))
 
-(defvar *reading-unicode-string*)
+(defvar *fHighByte*) ;; nil|0|1 ;; TODO clean up nil|t vs nil|0|1
+
+(defun read-ustring (stream nchars fHighByte)
+  (let ((*fHighByte* fHighByte)
+        (b (make-array (* 2 nchars)
+                       :element-type 'character
+                       :fill-pointer 0)))
+    (dotimes (i nchars (coerce b 'string))
+      (vector-push-extend
+       (code-char (let ((c (ecase *fHighByte*
+                             (0 (read-octet stream))
+                             (1 (logior (read-octet stream)
+                                        (ash (read-octet stream) 8))))))
+                    (assert (plusp c))
+                    c))
+       b))))
 
 (define-structure BIFF-XLUnicodeRichExtendedString ()
   (cch ushort)
   (%dummy ubyte)
-  (fHighByte t :compute (not (zerop (setq *reading-unicode-string* (logand 1 %dummy)))))
+  (fHighByte t :compute (logand 1 %dummy))
   (reserved1 t :compute (assert (zerop (logand 2 %dummy))))
   (fExtSt t :compute (not (zerop (logand 4 %dummy))))
   (fRichSt t :compute (not (zerop (logand 8 %dummy))))
   (reserved2 t :compute (assert (zerop (logand #xf0 %dummy))))
   (cRun ushort :when fRichSt :default 0)
   (cbExtRst dword :when fExtSt :default 0)
-  (rgb (ubyte (if fHighByte (* 2 cch) cch)))
+  (rgb t :compute (read-ustring stream cch fHighByte))
   (rgRun (BIFF-FormatRun cRun) :when fRichSt :default #())
-  (ExtRst (BIFF-ExtRst cbExtRst) :when fExtSt :default #())
-  (decoded t :compute (string-from-octets rgb fHighByte)))
+  (ExtRst (BIFF-ExtRst cbExtRst) :when fExtSt :default #()))
 
 (define-structure BIFF-SST ()
   (cstTotal dword)
@@ -1685,8 +1699,8 @@
                    (let ((n (read-ushort stream)))
                      (assert (< 0 n 8225)) ;; TODO biff8 or 2081 biff2-5
                      (incf size n)
-                     (when *reading-unicode-string*
-                       (assert (equal *reading-unicode-string* (read-octet stream))) ;; TODO can change
+                     (when *fHighByte*
+                       (setq *fHighByte* (logand 1 (read-octet stream)))
                        (decf size)))))
                (unless (< offset size)
                  (error 'end-of-file :stream self))
@@ -1712,7 +1726,7 @@
             (#x000a (not (setq eof t)))
             ;;(#x000b :index1)
             (#x0085 (read-BIFF-BoundSheet8 s))
-            (#x00fc (let (*reading-unicode-string*) (read-BIFF-SST s)))
+            (#x00fc (let (*fHighByte*) (read-BIFF-SST s)))
             (#x00fd (read-BIFF-LabelSst s))
             ;;(#x020b (read-BIFF-Index s))
             (#x027e (read-BIFF-Rk s))
@@ -1724,7 +1738,7 @@
      (let ((c (BIFF-LabelSst.cell x)))
        `(:label ,(BIFF-Cell.rw c)
                 ,(BIFF-Cell.col c)
-                ,(BIFF-XLUnicodeRichExtendedString.decoded
+                ,(BIFF-XLUnicodeRichExtendedString.rgb
                   (aref (BIFF-SST.rgb sst) (BIFF-LabelSst.isst x))))))
     (BIFF-RK
      `(:number ,(BIFF-RK.rw x)
