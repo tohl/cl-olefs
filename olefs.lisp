@@ -755,7 +755,7 @@
        ole-file
        entry
        (lambda (in level i h start end parents)
-         (declare (ignore end))
+         (declare (ignore end parents))
          (when debug
            ;; pre
            (when (and (zerop level) (plusp i))
