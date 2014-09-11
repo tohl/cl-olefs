@@ -1629,12 +1629,17 @@
   (cch ushort)
   (st BIFF-LPWideString))
 
+(define-structure BIFF-PhRuns ()
+  (ichFirst ushort) ;; TODO signed
+  (ichMom ushort)   ;; TODO signed
+  (cchMom ushort))  ;; TODO signed
+
 (define-structure BIFF-ExtRst ()
   (reserved ushort)
   (cb ushort)
   (phs dword)
   (rphssub BIFF-RPHSSub)
-  (rgphruns (PhRuns (BIFF-RPHSSub.crun rphssub))))
+  (rgphruns (BIFF-PhRuns (BIFF-RPHSSub.crun rphssub))))
 
 (defvar *fHighByte*) ;; nil|0|1 ;; TODO clean up nil|t vs nil|0|1
 
