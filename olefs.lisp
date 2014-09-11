@@ -1530,7 +1530,7 @@
   (ixfe ushort))
 
 (define-structure BIFF-Blank ()
-  (cell DIFF-Cell))
+  (cell BIFF-Cell))
 
 (define-structure BIFF-RkNumber ()
   (%dummy dword)
