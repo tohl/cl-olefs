@@ -1,0 +1,200 @@
+#+title: cl-olefs
+#+author: Tomas Hlavaty
+#+options: creator:nil 
+
+cl-olefs
+
+Project home: http://logand.com/sw/cl-olefs.html
+
+Contact: http://logand.com/contact.html
+
+Up: http://logand.com/sw/
+
+* Introduction
+
+cl-olefs is a library for reading MS Office files (PPT, DOC, XLS)
+implemented in portable Common Lisp.
+
+It is licensed under the MIT style licence.
+
+There are no dependencies on sbcl and ccl.  On other Common Lisp
+implementations, the only dependency is on ieee-floats.
+
+* Download and install
+
+Download the source code:
+
+: $ git clone http://logand.com/git/cl-olefs.git
+
+Then set up the Common Lisp environment to find the cl-olefs.asd file
+and load the system into the Lisp image.
+
+* Usage
+
+There are no exported symbols from the olefs package yet, while it is
+not sufficiently clear to me, what a good API should look like.
+However, it is already possible to:
+
+- read PPT files, transform them to HTML and extract images
+- partially read DOC files, especially formatting records
+- read XLS files; there are many missing features, but it is already
+  possible to parse text cells and cells containing (double) floating
+  numbers.
+
+Because, there is no API yet, use M-. instead of the documentation
+(are you using [[http://common-lisp.net/project/slime/][Slime]] yet?).  The code should be simple to follow,
+except the bizarre file format rules which are documented by MS and
+others.
+
+** products.xls example
+
+From https://base.google.com/base/products.xls
+
+| id | title              | description                                                                        | link                                        | price | brand | condition | image link                        |          isbn | mpn    |           upc | weight | product type                                                  | quantity | shipping                              | tax                         |
+|----+--------------------+------------------------------------------------------------------------------------+---------------------------------------------+-------+-------+-----------+-----------------------------------+---------------+--------+---------------+--------+---------------------------------------------------------------+----------+---------------------------------------+-----------------------------|
+|  1 | Red wool sweater   | Comfortable and soft, this sweater will keep you warm on those cold winter nights. | http://www.example.com/item1-info-page.html |    25 | Acme  | new       | http://www.example.com/image1.jpg |               | ABC123 | 0001230001232 | 0.1 lb | "Clothing & Accessories > Clothing > Outerwear > Sweaters"    |        3 | US:MA:Ground:5.95,US:024*:Ground:7.95 | US:CA:8.25:y,US:926*:8.75:y |
+|  2 | Total Recall       | Slightly used copy of Total Recall, the sci-fi classic, on DVD.                    | http://www.example.com/item2-info-page.html |    12 | Acme  | used      | http://www.example.com/image2.jpg |               | XXYYZZ | 0004560004560 | 0.2 lb | "Media > DVDs & Videos > Science Fiction"                     |        1 | US:MA:Ground:5.95                     | US::0:                      |
+|  3 | Winnie the Pooh    | Used copy. The adventures of Christopher Robin and his friends.                    | http://www.example.com/item3-info-page.html |    20 | Acme  | used      | http://www.example.com/image3.jpg | 0000142404674 |        |               | 0.3 lb | "Media > Books > Fiction > Literature"                        |        1 | US:::5.95                             | US::0:                      |
+|  4 | 8" plush Care Bear | Small care bear, brand new, absolutely adorable!                                   | http://www.example.com/item4-info-page.html |  6.99 | Acme  | new       | http://www.example.com/image4.jpg |               | AB001  | 0789012345674 | 0.4 lb | "Toys & Games > Toys > Dolls & Action Figures > Stuffed Toys" |        5 | US:::5.95                             | US:CA:8.25:y                |
+
+#+begin_src text
+  CL-USER> (olefs::parse-xls-file "products.xls")
+  (:WORKBOOK
+   (:SHEET "Products"
+           (:LABEL 0 0 "id")
+           (:LABEL 0 1 "title")
+           (:LABEL 0 2 "description")
+           (:LABEL 0 3 "link")
+           (:LABEL 0 4 "price")
+           (:LABEL 0 5 "brand")
+           (:LABEL 0 6 "condition")
+           (:LABEL 0 7 "image link")
+           (:LABEL 0 8 "isbn")
+           (:LABEL 0 9 "mpn")
+           (:LABEL 0 10 "upc")
+           (:LABEL 0 11 "weight")
+           (:LABEL 0 12 "product type")
+           (:LABEL 0 13 "quantity")
+           (:LABEL 0 14 "shipping")
+           (:LABEL 0 15 "tax")
+           (:LABEL 1 0 "1")
+           (:LABEL 1 1 "Red wool sweater")
+           (:LABEL 1 2 "Comfortable and soft, this sweater will keep you warm on those cold winter nights.")
+           (:LABEL 1 3 "http://www.example.com/item1-info-page.html")
+           (:NUMBER 1 4 25.0D0)
+           (:LABEL 1 5 "Acme")
+           (:LABEL 1 6 "new")
+           (:LABEL 1 7 "http://www.example.com/image1.jpg")
+           (:LABEL 1 9 "ABC123")
+           (:LABEL 1 10 "0001230001232")
+           (:LABEL 1 11 "0.1 lb")
+           (:LABEL 1 12 "\"Clothing & Accessories > Clothing > Outerwear > Sweaters\"")
+           (:NUMBER 1 13 3.0D0)
+           (:LABEL 1 14 "US:MA:Ground:5.95,US:024*:Ground:7.95")
+           (:LABEL 1 15 "US:CA:8.25:y,US:926*:8.75:y")
+           (:LABEL 2 0 "2")
+           (:LABEL 2 1 "Total Recall")
+           (:LABEL 2 2 "Slightly used copy of Total Recall, the sci-fi classic, on DVD.")
+           (:LABEL 2 3 "http://www.example.com/item2-info-page.html")
+           (:NUMBER 2 4 12.0D0)
+           (:LABEL 2 5 "Acme")
+           (:LABEL 2 6 "used")
+           (:LABEL 2 7 "http://www.example.com/image2.jpg")
+           (:LABEL 2 9 "XXYYZZ")
+           (:LABEL 2 10 "0004560004560")
+           (:LABEL 2 11 "0.2 lb")
+           (:LABEL 2 12 "\"Media > DVDs & Videos > Science Fiction\"")
+           (:NUMBER 2 13 1.0D0)
+           (:LABEL 2 14 "US:MA:Ground:5.95")
+           (:LABEL 2 15 "US::0:")
+           (:LABEL 3 0 "3")
+           (:LABEL 3 1 "Winnie the Pooh")
+           (:LABEL 3 2 "Used copy. The adventures of Christopher Robin and his friends.")
+           (:LABEL 3 3 "http://www.example.com/item3-info-page.html")
+           (:NUMBER 3 4 20.0D0)
+           (:LABEL 3 5 "Acme")
+           (:LABEL 3 6 "used")
+           (:LABEL 3 7 "http://www.example.com/image3.jpg")
+           (:LABEL 3 8 "0000142404674")
+           (:LABEL 3 11 "0.3 lb")
+           (:LABEL 3 12 "\"Media > Books > Fiction > Literature\"")
+           (:NUMBER 3 13 1.0D0)
+           (:LABEL 3 14 "US:::5.95")
+           (:LABEL 3 15 "US::0:")
+           (:LABEL 4 0 "4")
+           (:LABEL 4 1 "8\" plush Care Bear")
+           (:LABEL 4 2 "Small care bear, brand new, absolutely adorable!")
+           (:LABEL 4 3 "http://www.example.com/item4-info-page.html")
+           (:NUMBER 4 4 6.99D0)
+           (:LABEL 4 5 "Acme")
+           (:LABEL 4 6 "new")
+           (:LABEL 4 7 "http://www.example.com/image4.jpg")
+           (:LABEL 4 9 "AB001")
+           (:LABEL 4 10 "0789012345674")
+           (:LABEL 4 11 "0.4 lb")
+           (:LABEL 4 12 "\"Toys & Games > Toys > Dolls & Action Figures > Stuffed Toys\"")
+           (:NUMBER 4 13 5.0D0)
+           (:LABEL 4 14 "US:::5.95")
+           (:LABEL 4 15 "US:CA:8.25:y")))
+#+end_src
+
+** checkbook.xls example
+
+From http://sunburst.usd.edu/~bwjames/tut/excel/checkbook.xls
+
+| check # | date    | description                    | debit              | credit  | balance   |
+|---------+---------+--------------------------------+--------------------+---------+-----------|
+|         |         | open account (initial deposit) |                    | $500.00 | $500.00   |
+|     101 | 20/9/99 | Burger King                    | $8.57              |         | $491.43   |
+|         | 24/9/99 | Paycheck                       |                    | $539.00 | $1,030.43 |
+|     102 | 30/9/99 | Hy-Vee                         | $34.18             |         | $996.25   |
+|     103 | 22/9/99 | Electric Company               | $74.33             |         | $921.92   |
+|     104 | 23/9/99 | Cable TV                       | $24.56             |         | $897.36   |
+|         |         |                                |                    |         |           |
+|         |         |                                | equation           |         |           |
+|         |         |                                | previous balance   |         |           |
+|         |         |                                | subtract any debit |         |           |
+|         |         |                                | add any credit     |         |           |
+
+#+begin_src text
+  CL-USER> (olefs::parse-xls-file "checkbook.xls")
+  (:WORKBOOK
+   (:SHEET "Sheet1"
+           (:LABEL 0 0 "check #")
+           (:LABEL 0 1 "date")
+           (:LABEL 0 2 "description")
+           (:LABEL 0 3 "debit")
+           (:LABEL 0 4 "credit")
+           (:LABEL 0 5 "balance")
+           (:LABEL 1 2 "open account (initial deposit)")
+           (:NUMBER 1 4 500.0D0)
+           (:LABEL 2 2 "Burger King")
+           (:NUMBER 2 3 8.57D0)
+           (:NUMBER 3 1 34965.0D0)
+           (:LABEL 3 2 "Paycheck ")
+           (:NUMBER 3 4 539.0D0)
+           (:LABEL 4 2 "Hy-Vee")
+           (:NUMBER 4 3 34.18D0)
+           (:LABEL 5 2 "Electric Company")
+           (:NUMBER 5 3 74.33D0)
+           (:LABEL 6 2 "Cable TV")
+           (:NUMBER 6 3 24.56D0)
+           (:LABEL 8 3 "equation")
+           (:LABEL 9 3 "previous balance")
+           (:LABEL 10 3 "subtract any debit")
+           (:LABEL 11 3 "add any credit"))
+   (:SHEET "Sheet2")
+   (:SHEET "Sheet3"))
+#+end_src
+
+* Links
+
+Comments:
+http://www.reddit.com/r/lisp/comments/1axs8u/clolefs_step_towards_reading_ppt_doc_xls_in/
+
+Hans Hübner: Dealing with Excel files from Common Lisp - Using ABCL
+and Apache POI
+http://netzhansa.blogspot.com/2013/03/dealing-with-excel-files-from-common.html
+
+ABCL Dev: M$FT Excel format from Common Lisp.
+http://abcl-dev.blogspot.com/2013/03/mft-excel-format-from-common-lisp.html
