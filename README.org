@@ -18,7 +18,7 @@ implemented in portable Common Lisp.
 It is licensed under the MIT style licence.
 
 There are no dependencies on sbcl and ccl.  On other Common Lisp
-implementations, the only dependency is on ieee-floats.
+implementations, the only dependency is on [[https://github.com/marijnh/ieee-floats][ieee-floats]].
 
 * Download and install
 
