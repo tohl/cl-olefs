@@ -1,6 +1,6 @@
 ;;; -*- lisp; -*-
 
-;;; Copyright (C) 2011, 2012, 2013 Tomas Hlavaty <tom@logand.com>
+;;; Copyright (C) 2011--2015 Tomas Hlavaty <tom@logand.com>
 ;;;
 ;;; Permission is hereby granted, free of charge, to any person
 ;;; obtaining a copy of this software and associated documentation
@@ -22,13 +22,8 @@
 ;;; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 ;;; DEALINGS IN THE SOFTWARE.
 
-(defpackage :cl-olefs-system
-  (:use :asdf :cl))
-
-(in-package :cl-olefs-system)
-
-(defsystem :cl-olefs
-  :description "OLE File System tools for Common Lisp."
+(asdf:defsystem :cl-olefs
+  :description "OLE File System tools for Common Lisp"
   :author "Tomas Hlavaty <tom@logand.com>"
   :maintainer "Tomas Hlavaty <tom@logand.com>"
   :licence "MIT"
